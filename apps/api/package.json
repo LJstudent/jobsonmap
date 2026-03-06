@@ -24,6 +24,8 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "@fastify/swagger": "^9.7.0",
+    "@fastify/swagger-ui": "^5.2.5",
     "axios": "^1.13.5",
     "dotenv": "^17.3.1",
     "drizzle-orm": "^0.45.1",
