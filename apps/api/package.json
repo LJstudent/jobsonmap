@@ -4,8 +4,12 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev":"ts-node-dev src/index.ts",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "ts-node-dev src/index.ts",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "push": "drizzle-kit push",
+    "ingest:utrecht": "ts-node-dev src/workers/utrecht.ingest.ts"
   },
   "keywords": [],
   "author": "",
@@ -13,11 +17,18 @@
   "type": "commonjs",
   "devDependencies": {
     "@types/node": "^22.19.11",
+    "@types/pg": "^8.16.0",
     "drizzle-kit": "^0.31.9",
     "ts-node-dev": "^2.0.0",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "fastify": "^5.7.4"
+    "axios": "^1.13.5",
+    "dotenv": "^17.3.1",
+    "drizzle-orm": "^0.45.1",
+    "fastify": "^5.7.4",
+    "h3-js": "^4.4.0",
+    "pg": "^8.18.0"
   }
 }
