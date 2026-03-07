@@ -6,10 +6,6 @@ import { GetBusinessesRequest } from "./businesses.types";
 const getAllBusinessesQuerySchema = {
   type: "object",
   properties: {
-    limit: { type: "integer", minimum: 1, maximum: 200, default: 50 },
-    offset: { type: "integer", minimum: 0, default: 0 },
-    city: { type: "string", minLength: 1 },
-    hasJobsPage: { type: "boolean" },
   },
 } as const;
 export const businessesRoutes: FastifyPluginAsync = async (fastify) => {
