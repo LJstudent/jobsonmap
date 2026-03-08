@@ -27,7 +27,6 @@ async function run() {
           placeId: place.place_id,
           latitude: place.geometry.location.lat,
           longitude: place.geometry.location.lng,
-          city: "Utrecht",
         })
         .onConflictDoNothing()
         .returning();

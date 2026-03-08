@@ -1,0 +1,1 @@
+ALTER TABLE "businesses" RENAME COLUMN "city" TO "formatted_address";

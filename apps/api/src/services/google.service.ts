@@ -78,6 +78,7 @@ export async function fetchUtrechtBusinesses(apiKey: string) {
           location: `${center.lat},${center.lng}`,
           radius: 2000,
           keyword,
+          fields: "name,place_id,geometry",
           key: apiKey,
         };
 

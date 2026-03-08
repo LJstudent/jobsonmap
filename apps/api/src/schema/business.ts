@@ -23,7 +23,7 @@ export const businesses = pgTable(
 
         website: text("website"),
 
-        city: text("city"),
+        formattedAddress: text("formatted_address"),
 
         hasJobsPage: boolean("has_jobs_page").default(false),
 
