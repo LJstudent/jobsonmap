@@ -1,7 +1,7 @@
 export type GetAllBusinessesQuery = {
   limit: number;
   offset: number;
-  city?: string;
+  formattedAddress?: string;
   hasJobsPage?: boolean;
 };
 
@@ -12,7 +12,7 @@ export type BusinessRecord = {
   latitude: number;
   longitude: number;
   website: string | null;
-  city: string | null;
+  formattedAddress: string | null;
   hasJobsPage: boolean | null;
   crawlAttempted: boolean | null;
   createdAt: Date;

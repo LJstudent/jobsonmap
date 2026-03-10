@@ -7,8 +7,8 @@ export class BusinessesRepository {
   async getAll(query: GetAllBusinessesQuery): Promise<GetAllBusinessesResult> {
     const whereClauses: SQL[] = [];
 
-    if (query.city) {
-      whereClauses.push(eq(businesses.city, query.city));
+    if (query.formattedAddress) {
+      whereClauses.push(eq(businesses.formattedAddress, query.formattedAddress));
     }
 
     if (typeof query.hasJobsPage === "boolean") {
@@ -25,7 +25,7 @@ export class BusinessesRepository {
         latitude: businesses.latitude,
         longitude: businesses.longitude,
         website: businesses.website,
-        city: businesses.city,
+        formattedAddress: businesses.formattedAddress,
         hasJobsPage: businesses.hasJobsPage,
         crawlAttempted: businesses.crawlAttempted,
         createdAt: businesses.createdAt,

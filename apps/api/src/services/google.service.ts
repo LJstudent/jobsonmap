@@ -4,6 +4,8 @@ import { polygonToCells, cellToLatLng } from "h3-js";
 
 const BASE_URL =
   "https://maps.googleapis.com/maps/api/place/nearbysearch/json";
+const DETAILS_URL =
+  "https://maps.googleapis.com/maps/api/place/details/json";
 
 const sleep = (ms: number) =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -49,7 +51,7 @@ export async function fetchUtrechtBusinesses(apiKey: string) {
   let totalRequests = 0;
   let totalResults = 0;
 
-  // resolution 7 ≈ ~2–3km hexagons
+  // resolution 7 ~= ~2-3km hexagons
   const resolution = 7;
 
   const hexagons = polygonToCells(areaPolygon, resolution);
@@ -62,12 +64,10 @@ export async function fetchUtrechtBusinesses(apiKey: string) {
   console.log("Total hex cells:", centers.length);
 
   for (const center of centers) {
-    console.log(
-      `\n📍 Searching hex center: ${center.lat}, ${center.lng}`
-    );
+    console.log(`\nSearching hex center: ${center.lat}, ${center.lng}`);
 
     for (const keyword of keywords) {
-      console.log(`🔎 Keyword: ${keyword}`);
+      console.log(`Keyword: ${keyword}`);
 
       let nextPageToken: string | undefined;
 
@@ -82,7 +82,6 @@ export async function fetchUtrechtBusinesses(apiKey: string) {
           key: apiKey,
         };
 
-        // Only send pagetoken if it exists
         if (nextPageToken) {
           params.pagetoken = nextPageToken;
         }
@@ -93,9 +92,7 @@ export async function fetchUtrechtBusinesses(apiKey: string) {
 
         const results = data.results ?? [];
 
-        console.log(
-          `Request ${totalRequests} → ${results.length} results`
-        );
+        console.log(`Request ${totalRequests} -> ${results.length} results`);
 
         if (results.length > 0) {
           console.log("Example company:", results[0].name);
@@ -117,7 +114,6 @@ export async function fetchUtrechtBusinesses(apiKey: string) {
           console.log("Waiting for next page token...");
           await sleep(2000);
         }
-
       } while (nextPageToken);
     }
   }
@@ -127,4 +123,40 @@ export async function fetchUtrechtBusinesses(apiKey: string) {
   console.log("Total places collected:", totalResults);
 
   return allResults;
+}
+
+type GooglePlaceDetails = {
+  website: string | null;
+  formattedAddress: string | null;
+};
+
+export async function fetchPlaceDetails(
+  apiKey: string,
+  placeId: string
+): Promise<GooglePlaceDetails> {
+  const { data } = await axios.get(DETAILS_URL, {
+    params: {
+      place_id: placeId,
+      fields: "website,formatted_address",
+      key: apiKey,
+    },
+  });
+
+  if (data.status !== "OK") {
+    if (data.status === "ZERO_RESULTS" || data.status === "NOT_FOUND") {
+      return {
+        website: null,
+        formattedAddress: null,
+      };
+    }
+
+    throw new Error(
+      `Google Place Details failed for ${placeId}: ${data.status}`
+    );
+  }
+
+  return {
+    website: data.result?.website ?? null,
+    formattedAddress: data.result?.formatted_address ?? null,
+  };
 }
