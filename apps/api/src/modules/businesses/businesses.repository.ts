@@ -1,6 +1,6 @@
 import { and, desc, eq, sql, type SQL } from "drizzle-orm";
 import { db } from "../../db";
-import { businesses } from "../../schema/business";
+import { businesses } from "../../schema/businesses";
 import { type BusinessRecord, type GetAllBusinessesQuery, type GetAllBusinessesResult } from "./businesses.types";
 
 export class BusinessesRepository {
@@ -27,7 +27,6 @@ export class BusinessesRepository {
         website: businesses.website,
         formattedAddress: businesses.formattedAddress,
         hasJobsPage: businesses.hasJobsPage,
-        crawlAttempted: businesses.crawlAttempted,
         createdAt: businesses.createdAt,
       })
       .from(businesses)

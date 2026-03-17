@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { and, asc, eq, isNull, or } from "drizzle-orm";
 import { db } from "../db";
-import { businesses } from "../schema/business";
+import { businesses } from "../schema/businesses";
 import { fetchPlaceDetails } from "../services/google.service";
 
 const sleep = (ms: number) =>

@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { db } from "../db";
-import { businesses } from "../schema/business";
+import { businesses } from "../schema/businesses";
 import { fetchUtrechtBusinesses } from "../services/google.service";
 
 async function run() {

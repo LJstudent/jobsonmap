@@ -27,7 +27,25 @@ export const businesses = pgTable(
 
         hasJobsPage: boolean("has_jobs_page").default(false),
 
-        crawlAttempted: boolean("crawl_attempted").default(false),
+        // discovery result
+        jobsUrl: text("jobs_url"),
+
+        jobsPlatform: text("jobs_platform"),
+
+        jobsDiscoveryStatus: text("jobs_discovery_status"),
+
+        jobsDiscoveryCheckedAt: timestamp("jobs_discovery_checked_at"),
+
+        jobsScrapeStatus: text("jobs_scrape_status"),
+
+        jobsScrapeCheckedAt: timestamp("jobs_scrape_checked_at"),
+
+        // scheduling (VERY useful for workers)
+        nextDiscoveryAt: timestamp("next_discovery_at"),
+        nextScrapeAt: timestamp("next_scrape_at"),
+
+        // analytics
+        lastJobsFoundAt: timestamp("last_jobs_found_at"),
 
         createdAt: timestamp("created_at").defaultNow().notNull(),
     },

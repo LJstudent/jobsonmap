@@ -15,6 +15,20 @@
       "when": 1773004751406,
       "tag": "0001_flat_mysterio",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1773314608046,
+      "tag": "0002_great_sunset_bain",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1773403200000,
+      "tag": "0003_swift_job_discovery_duration",
+      "breakpoints": true
     }
   ]
 }

@@ -14,7 +14,6 @@ export type BusinessRecord = {
   website: string | null;
   formattedAddress: string | null;
   hasJobsPage: boolean | null;
-  crawlAttempted: boolean | null;
   createdAt: Date;
 };
 
