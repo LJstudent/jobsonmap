@@ -32,6 +32,11 @@ export type JobPageDiscoveryResult = {
   attempts: DiscoveryAttempt[];
 };
 
+export type Candidate = {
+  url: string;
+  source: "subdomain" | "path" | "crawl" | "sitemap" | "html";
+};
+
 type QueueItem = {
   url: string;
   depth: number;
@@ -53,6 +58,22 @@ type FinalizedCandidate = {
   platform: string | null;
 };
 
+type CandidateCollectionResult = {
+  attempt: DiscoveryAttempt;
+  candidates: Candidate[];
+};
+
+type ScoredCandidate = Candidate & {
+  score: number;
+  reasons: string[];
+};
+
+type CandidateSelection = {
+  finalized: FinalizedCandidate | null;
+  selected: ScoredCandidate | null;
+  scoredCandidates: ScoredCandidate[];
+};
+
 const STRONG_JOB_KEYWORDS = [
   "vacatures",
   "vacature",
@@ -66,7 +87,7 @@ const STRONG_JOB_KEYWORDS = [
   "job",
   "career",
   "working-at",
-  "kom-werken"
+  "kom-werken",
 ];
 
 const WEAK_JOB_KEYWORDS = [
@@ -115,19 +136,39 @@ const LISTING_SEGMENTS = ["/vacatures", "/jobs", "/careers", "/werken-bij", "/we
 const MAX_CRAWL_DEPTH = 2;
 const MAX_LINKS_PER_PAGE = 25;
 
+const SCORE_WEIGHTS = {
+  strongKeyword: 10,
+  weakKeyword: 3,
+  falsePositiveWithoutJobKeyword: -15,
+  overviewBonus: 5,
+  businessNameBonus: 3,
+  atsBonus: 5,
+  detailPenalty: -5,
+  source: {
+    subdomain: 8,
+    path: 6,
+    sitemap: 5,
+    html: 4,
+    crawl: 2,
+  } satisfies Record<Candidate["source"], number>,
+  minimumAcceptedScore: 5,
+} as const;
+
 function containsStrongKeyword(value: string): boolean {
-  const normalized = value.toLowerCase();
-  return STRONG_JOB_KEYWORDS.some((keyword) => normalized.includes(keyword));
+  return getKeywordMatches(value, STRONG_JOB_KEYWORDS).length > 0;
 }
 
 function containsWeakKeyword(value: string): boolean {
-  const normalized = value.toLowerCase();
-  return WEAK_JOB_KEYWORDS.some((keyword) => normalized.includes(keyword));
+  return getKeywordMatches(value, WEAK_JOB_KEYWORDS).length > 0;
 }
 
 function hasFalsePositiveHint(value: string): boolean {
+  return getKeywordMatches(value, FALSE_POSITIVE_PATTERNS).length > 0;
+}
+
+function getKeywordMatches(value: string, keywords: readonly string[]): string[] {
   const normalized = value.toLowerCase();
-  return FALSE_POSITIVE_PATTERNS.some((pattern) => normalized.includes(pattern));
+  return keywords.filter((keyword) => normalized.includes(keyword));
 }
 
 function detectAtsProvider(url: string): string | null {
@@ -204,11 +245,127 @@ function isRecruitmentDomain(url: string, companyTokens: string[]): boolean {
 
 function hasJobDetailPattern(url: string): boolean {
   try {
-    const pathname = new URL(url).pathname.toLowerCase().replace(/\/+$/, "");
-    return LISTING_SEGMENTS.some((segment) => pathname.startsWith(`${segment}/`) && pathname !== segment);
+    const parsed = new URL(url);
+    const pathname = parsed.pathname.toLowerCase().replace(/\/+$/, "");
+    const segment = LISTING_SEGMENTS.find((item) => pathname.startsWith(`${item}/`) && pathname !== item);
+
+    if (segment) {
+      return true;
+    }
+
+    const pathSegments = pathname.split("/").filter(Boolean);
+    const lastSegment = pathSegments.at(-1) ?? "";
+    const parentSegment = pathSegments.length > 1 ? `/${pathSegments[pathSegments.length - 2]}` : "";
+    const slugLike = lastSegment.split("-").length >= 3;
+
+    return slugLike && LISTING_SEGMENTS.includes(parentSegment);
   } catch {
     return false;
   }
+}
+
+function isLikelyJobOverviewPage(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const pathname = parsed.pathname.toLowerCase().replace(/\/+$/, "");
+    const pathSegments = pathname.split("/").filter(Boolean);
+    const lastSegment = pathSegments.at(-1) ?? "";
+
+    if (!lastSegment || hasJobDetailPattern(url)) {
+      return false;
+    }
+
+    return STRONG_JOB_KEYWORDS.includes(lastSegment) || LISTING_SEGMENTS.includes(`/${lastSegment}`);
+  } catch {
+    return false;
+  }
+}
+
+function normalizeBusinessNameTokens(businessName: string): string[] {
+  const lower = businessName.toLowerCase();
+  const splitTokens = lower.split(/[^a-z0-9]+/i).filter((token) => token.length >= 3);
+  const compact = lower.replace(/[^a-z0-9]/gi, "");
+
+  return compact.length >= 3 ? [...new Set([...splitTokens, compact])] : [...new Set(splitTokens)];
+}
+
+export function scoreCandidate(candidate: Candidate, businessName: string): number {
+  const normalizedUrl = candidate.url.toLowerCase();
+  const strongMatches = getKeywordMatches(normalizedUrl, STRONG_JOB_KEYWORDS);
+  const weakMatches = getKeywordMatches(normalizedUrl, WEAK_JOB_KEYWORDS);
+  const falsePositiveMatches = getKeywordMatches(normalizedUrl, FALSE_POSITIVE_PATTERNS);
+  const businessTokens = normalizeBusinessNameTokens(businessName);
+
+  let score = 0;
+
+  score += strongMatches.length * SCORE_WEIGHTS.strongKeyword;
+  score += weakMatches.length * SCORE_WEIGHTS.weakKeyword;
+
+  if (strongMatches.length === 0 && weakMatches.length === 0 && falsePositiveMatches.length > 0) {
+    score += SCORE_WEIGHTS.falsePositiveWithoutJobKeyword;
+  }
+
+  if (isLikelyJobOverviewPage(candidate.url)) {
+    score += SCORE_WEIGHTS.overviewBonus;
+  }
+
+  if (businessTokens.some((token) => normalizedUrl.includes(token))) {
+    score += SCORE_WEIGHTS.businessNameBonus;
+  }
+
+  if (detectAtsProvider(candidate.url)) {
+    score += SCORE_WEIGHTS.atsBonus;
+  }
+
+  if (hasJobDetailPattern(candidate.url)) {
+    score += SCORE_WEIGHTS.detailPenalty;
+  }
+
+  score += SCORE_WEIGHTS.source[candidate.source];
+
+  return score;
+}
+
+function explainCandidateScore(candidate: Candidate, businessName: string): string[] {
+  const normalizedUrl = candidate.url.toLowerCase();
+  const strongMatches = getKeywordMatches(normalizedUrl, STRONG_JOB_KEYWORDS);
+  const weakMatches = getKeywordMatches(normalizedUrl, WEAK_JOB_KEYWORDS);
+  const falsePositiveMatches = getKeywordMatches(normalizedUrl, FALSE_POSITIVE_PATTERNS);
+  const businessTokens = normalizeBusinessNameTokens(businessName);
+  const reasons: string[] = [];
+
+  if (strongMatches.length > 0) {
+    reasons.push(`strong=${strongMatches.join(",")}`);
+  }
+
+  if (weakMatches.length > 0) {
+    reasons.push(`weak=${weakMatches.join(",")}`);
+  }
+
+  if (strongMatches.length === 0 && weakMatches.length === 0 && falsePositiveMatches.length > 0) {
+    reasons.push(`false-positive=${falsePositiveMatches.join(",")}`);
+  }
+
+  if (isLikelyJobOverviewPage(candidate.url)) {
+    reasons.push("overview");
+  }
+
+  if (businessTokens.some((token) => normalizedUrl.includes(token))) {
+    reasons.push("business-name");
+  }
+
+  const atsProvider = detectAtsProvider(candidate.url);
+  if (atsProvider) {
+    reasons.push(`ats=${atsProvider}`);
+  }
+
+  if (hasJobDetailPattern(candidate.url)) {
+    reasons.push("detail-page");
+  }
+
+  reasons.push(`source=${candidate.source}`);
+
+  return reasons;
 }
 
 function getParentListingUrl(url: string): string | null {
@@ -327,12 +484,17 @@ function extractLinks(html: string, baseUrl: string, companyTokens: string[]): E
 
 function extractFooterHtml(html: string): string {
   const lower = html.toLowerCase();
-
   const start = lower.indexOf("<footer");
-  if (start === -1) return "";
+
+  if (start === -1) {
+    return "";
+  }
 
   const end = lower.indexOf("</footer>", start);
-  if (end === -1) return "";
+
+  if (end === -1) {
+    return "";
+  }
 
   return html.slice(start, end + "</footer>".length);
 }
@@ -363,12 +525,12 @@ function assessPageSignals(
   const weakSignal = current.signalStrength === "weak" || weakOnUrl || weakOnPage;
   const directStrongSignal = current.signalStrength === "strong" || containsStrongKeyword(finalPageUrl);
   const falsePositive = hasFalsePositiveHint(finalPageUrl) && !directStrongSignal;
-  const hasJobDetailLinks = links.some(link => hasJobDetailPattern(link.url));
+  const hasJobDetailLinks = links.some((link) => hasJobDetailPattern(link.url));
 
   if (!hasJobDetailLinks && current.depth === 0) {
     return {
       isJobPage: false,
-      hasAdditionalSignals
+      hasAdditionalSignals,
     };
   }
 
@@ -378,129 +540,60 @@ function assessPageSignals(
   };
 }
 
-async function findExternalCandidate(
-  links: ExtractedLink[],
-  startUrl: string,
-  companyTokens: string[],
-  allowWeakMatch: boolean
-): Promise<FinalizedCandidate | null> {
-  const prioritizedCandidates = links
-    .filter(
-      (link) =>
-        !isSameRootDomain(link.url, startUrl) &&
-        (link.atsProvider || link.recruitmentDomainSignal) &&
-        (link.strongSignal || (allowWeakMatch && link.weakSignal))
-    )
-    .sort((left, right) => Number(right.strongSignal) - Number(left.strongSignal));
-
-  for (const link of prioritizedCandidates) {
-    const finalized = await finalizeCandidateUrl(link.url, startUrl, companyTokens);
-
-    if (finalized) {
-      return finalized;
+function addCandidate(store: Map<string, Candidate>, candidate: Candidate): void {
+  try {
+    if (isFileLikeUrl(candidate.url)) {
+      return;
     }
-  }
 
-  return null;
+    const normalizedUrl = normalizeStoredUrl(candidate.url);
+    const key = `${candidate.source}:${normalizedUrl}`;
+
+    if (!store.has(key)) {
+      store.set(key, {
+        url: normalizedUrl,
+        source: candidate.source,
+      });
+    }
+  } catch {
+    return;
+  }
 }
 
-async function inspectFooterForJobPage(startUrl: string): Promise<{
-  attempt: DiscoveryAttempt;
-  jobsUrl: string | null;
-  platform: string | null;
-}> {
+function addCandidatesFromLinks(
+  store: Map<string, Candidate>,
+  links: ExtractedLink[],
+  source: Candidate["source"],
+  startUrl: string
+): void {
+  for (const link of links) {
+    const combined = `${link.url} ${link.text}`;
+    const isExternalRecruitment = !isSameRootDomain(link.url, startUrl) && (link.atsProvider || link.recruitmentDomainSignal);
+    const hasJobSignal = link.strongSignal || link.weakSignal || hasJobDetailPattern(link.url);
+    const hasUsefulAboutSignal = link.aboutSignal && (link.strongSignal || link.weakSignal);
+
+    if (isExternalRecruitment || hasJobSignal || hasUsefulAboutSignal) {
+      addCandidate(store, { url: link.url, source });
+    } else if (hasFalsePositiveHint(combined) && (link.atsProvider || link.recruitmentDomainSignal)) {
+      addCandidate(store, { url: link.url, source });
+    }
+  }
+}
+
+async function inspectFooterForJobPage(startUrl: string): Promise<CandidateCollectionResult> {
   const startedAt = Date.now();
   const companyTokens = getCompanyTokens(startUrl);
+  const candidates = new Map<string, Candidate>();
 
   try {
     const page = await fetchHtmlPage(startUrl);
     const finalPageUrl = normalizeStoredUrl(page.finalUrl);
-
     const footerHtml = extractFooterHtml(page.html);
-
-    const footerLinks = footerHtml
-      ? extractLinks(footerHtml, finalPageUrl, companyTokens)
-      : [];
-
+    const footerLinks = footerHtml ? extractLinks(footerHtml, finalPageUrl, companyTokens) : [];
     const allLinks = extractLinks(page.html, finalPageUrl, companyTokens);
 
-    const links = [
-      ...footerLinks.map((l) => ({ ...l, source: "footer" as const })),
-      ...allLinks.map((l) => ({ ...l, source: "html" as const })),
-    ];
-
-    // 🔥 1. External candidates (ATS etc.)
-    const externalCandidate = await findExternalCandidate(
-      links,
-      startUrl,
-      companyTokens,
-      true
-    );
-
-    console.log(externalCandidate)
-
-    if (
-      externalCandidate &&
-      !hasFalsePositiveHint(externalCandidate.jobsUrl)
-    ) {
-      return {
-        attempt: {
-          method: "crawl",
-          status: "found",
-          foundUrl: externalCandidate.jobsUrl,
-          durationMs: Date.now() - startedAt,
-          message: "Found external jobs candidate (footer/html)",
-        },
-        jobsUrl: externalCandidate.jobsUrl,
-        platform: externalCandidate.platform,
-      };
-    }
-    console.log(externalCandidate)
-
-    // 🔥 2. Same-domain candidates (FIXED FILTER)
-    const sameDomainCandidates = prioritizeSameDomainLinks(
-      links,
-      startUrl
-    ).filter((link) => {
-      const combined = `${link.url} ${link.text}`;
-
-      // ❌ Remove blog/news/etc
-      if (hasFalsePositiveHint(combined)) return false;
-
-      return (
-        link.strongSignal ||
-        link.atsProvider || // ATS always allowed
-        (link.weakSignal && !link.aboutSignal)
-      );
-    });
-
-    console.log("Filtered candidates:", sameDomainCandidates);
-
-    // 🔥 3. Finalize candidates safely
-    for (const link of sameDomainCandidates) {
-      const finalized = await finalizeCandidateUrl(
-        link.url,
-        startUrl,
-        companyTokens
-      );
-
-      if (
-        finalized &&
-        !hasFalsePositiveHint(finalized.jobsUrl)
-      ) {
-        return {
-          attempt: {
-            method: "crawl",
-            status: "found",
-            foundUrl: finalized.jobsUrl,
-            durationMs: Date.now() - startedAt,
-            message: "Found same-domain jobs candidate",
-          },
-          jobsUrl: finalized.jobsUrl,
-          platform: finalized.platform,
-        };
-      }
-    }
+    addCandidatesFromLinks(candidates, footerLinks, "html", startUrl);
+    addCandidatesFromLinks(candidates, allLinks, "html", startUrl);
 
     return {
       attempt: {
@@ -508,10 +601,9 @@ async function inspectFooterForJobPage(startUrl: string): Promise<{
         status: "not_found",
         foundUrl: null,
         durationMs: Date.now() - startedAt,
-        message: "No job links found",
+        message: `Collected ${candidates.size} HTML candidate(s)`,
       },
-      jobsUrl: null,
-      platform: null,
+      candidates: [...candidates.values()],
     };
   } catch {
     return {
@@ -522,16 +614,12 @@ async function inspectFooterForJobPage(startUrl: string): Promise<{
         durationMs: Date.now() - startedAt,
         message: "Footer inspection failed",
       },
-      jobsUrl: null,
-      platform: null,
+      candidates: [],
     };
   }
 }
-async function crawlForJobPage(startUrl: string): Promise<{
-  attempt: DiscoveryAttempt;
-  jobsUrl: string | null;
-  platform: string | null;
-}> {
+
+async function crawlForJobPage(startUrl: string): Promise<CandidateCollectionResult> {
   const startedAt = Date.now();
   const companyTokens = getCompanyTokens(startUrl);
   const queue: QueueItem[] = [
@@ -546,6 +634,7 @@ async function crawlForJobPage(startUrl: string): Promise<{
     },
   ];
   const visited = new Set<string>();
+  const candidates = new Map<string, Candidate>();
   let visitedPages = 0;
   let fetchErrors = 0;
 
@@ -569,17 +658,7 @@ async function crawlForJobPage(startUrl: string): Promise<{
       const directAtsProvider = detectAtsProvider(normalizedCurrentUrl);
 
       if (directAtsProvider) {
-        return {
-          attempt: {
-            method: "crawl",
-            status: "found",
-            foundUrl: normalizedCurrentUrl,
-            durationMs: Date.now() - startedAt,
-            message: `Resolved directly to ${directAtsProvider}`,
-          },
-          jobsUrl: normalizedCurrentUrl,
-          platform: directAtsProvider,
-        };
+        addCandidate(candidates, { url: normalizedCurrentUrl, source: "crawl" });
       }
 
       const page = await fetchHtmlPage(normalizedCurrentUrl);
@@ -587,103 +666,20 @@ async function crawlForJobPage(startUrl: string): Promise<{
       const pageText = stripHtml(page.html);
       const links = extractLinks(page.html, finalPageUrl, companyTokens);
       const pageAssessment = assessPageSignals(current, finalPageUrl, pageText, links);
-      const strongJobLink = links.find(link => link.strongSignal);
-
-      if (strongJobLink) {
-        const finalized = await finalizeCandidateUrl(
-          strongJobLink.url,
-          startUrl,
-          companyTokens
-        );
-
-        if (finalized) {
-          return {
-            attempt: {
-              method: "crawl",
-              status: "found",
-              foundUrl: finalized.jobsUrl,
-              durationMs: Date.now() - startedAt,
-              message: "Found jobs page via strong link",
-            },
-            jobsUrl: finalized.jobsUrl,
-            platform: finalized.platform,
-          };
-        }
-      }
 
       visited.add(finalPageUrl);
 
-      const redirectedAtsProvider = detectAtsProvider(finalPageUrl);
-
-      if (redirectedAtsProvider) {
-        return {
-          attempt: {
-            method: "crawl",
-            status: "found",
-            foundUrl: finalPageUrl,
-            durationMs: Date.now() - startedAt,
-            message: `Redirected to ${redirectedAtsProvider}`,
-          },
-          jobsUrl: finalPageUrl,
-          platform: redirectedAtsProvider,
-        };
+      if (
+        detectAtsProvider(finalPageUrl) ||
+        pageAssessment.isJobPage ||
+        containsStrongKeyword(finalPageUrl) ||
+        containsWeakKeyword(finalPageUrl) ||
+        hasJobDetailPattern(finalPageUrl)
+      ) {
+        addCandidate(candidates, { url: finalPageUrl, source: "crawl" });
       }
 
-      const externalCandidate = await findExternalCandidate(
-        links,
-        startUrl,
-        companyTokens,
-        pageAssessment.hasAdditionalSignals || isAboutPage(finalPageUrl)
-      );
-
-      if (externalCandidate) {
-        return {
-          attempt: {
-            method: "crawl",
-            status: "found",
-            foundUrl: externalCandidate.jobsUrl,
-            durationMs: Date.now() - startedAt,
-            message: "Found external recruitment candidate during crawl",
-          },
-          jobsUrl: externalCandidate.jobsUrl,
-          platform: externalCandidate.platform,
-        };
-      }
-
-      if (pageAssessment.isJobPage) {
-        const normalizedJobsUrl = await normalizeDiscoveredUrl(finalPageUrl);
-        const atsLink = links.find((link) => Boolean(link.atsProvider) && (link.strongSignal || link.weakSignal));
-
-        if (atsLink?.atsProvider) {
-          const finalizedAtsLink = await finalizeCandidateUrl(atsLink.url, startUrl, companyTokens);
-
-          if (finalizedAtsLink) {
-            return {
-              attempt: {
-                method: "crawl",
-                status: "found",
-                foundUrl: finalizedAtsLink.jobsUrl,
-                durationMs: Date.now() - startedAt,
-                message: `Found ATS link on jobs page: ${atsLink.atsProvider}`,
-              },
-              jobsUrl: finalizedAtsLink.jobsUrl,
-              platform: finalizedAtsLink.platform,
-            };
-          }
-        }
-
-        return {
-          attempt: {
-            method: "crawl",
-            status: "found",
-            foundUrl: normalizedJobsUrl,
-            durationMs: Date.now() - startedAt,
-            message: `Found jobs page during crawl at depth ${current.depth}`,
-          },
-          jobsUrl: normalizedJobsUrl,
-          platform: null,
-        };
-      }
+      addCandidatesFromLinks(candidates, links, "crawl", startUrl);
 
       if (current.depth >= MAX_CRAWL_DEPTH) {
         continue;
@@ -716,85 +712,53 @@ async function crawlForJobPage(startUrl: string): Promise<{
       message:
         visitedPages === 0
           ? "No pages were crawled"
-          : `Visited ${visitedPages} page(s), fetch errors: ${fetchErrors}`,
+          : `Visited ${visitedPages} page(s), fetch errors: ${fetchErrors}, candidates: ${candidates.size}`,
     },
-    jobsUrl: null,
-    platform: null,
+    candidates: [...candidates.values()],
   };
 }
 
-async function discoverFromSitemapCandidates(startUrl: string): Promise<{
-  attempt: DiscoveryAttempt;
-  jobsUrl: string | null;
-  platform: string | null;
-}> {
+async function discoverFromSitemapCandidates(startUrl: string): Promise<CandidateCollectionResult> {
   const startedAt = Date.now();
-  const companyTokens = getCompanyTokens(startUrl);
-  const sitemapCandidates = await discoverFromSitemap(startUrl);
 
-  for (const candidateUrl of sitemapCandidates) {
-    const finalized = await finalizeCandidateUrl(candidateUrl, startUrl, companyTokens);
+  try {
+    const sitemapCandidates = await discoverFromSitemap(startUrl);
+    const candidates = sitemapCandidates.map((url) => ({ url, source: "sitemap" as const }));
 
-    if (finalized) {
-      return {
-        attempt: {
-          method: "sitemap",
-          status: "found",
-          foundUrl: finalized.jobsUrl,
-          durationMs: Date.now() - startedAt,
-          message: "Matched job URL from sitemap.xml",
-        },
-        jobsUrl: finalized.jobsUrl,
-        platform: finalized.platform,
-      };
-    }
+    return {
+      attempt: {
+        method: "sitemap",
+        status: "not_found",
+        foundUrl: null,
+        durationMs: Date.now() - startedAt,
+        message:
+          candidates.length > 0
+            ? `Collected ${candidates.length} sitemap candidate(s)`
+            : "No job-related sitemap URLs found",
+      },
+      candidates,
+    };
+  } catch {
+    return {
+      attempt: {
+        method: "sitemap",
+        status: "error",
+        foundUrl: null,
+        durationMs: Date.now() - startedAt,
+        message: "Sitemap discovery failed",
+      },
+      candidates: [],
+    };
   }
-
-  return {
-    attempt: {
-      method: "sitemap",
-      status: "not_found",
-      foundUrl: null,
-      durationMs: Date.now() - startedAt,
-      message:
-        sitemapCandidates.length > 0
-          ? `Sitemap returned ${sitemapCandidates.length} candidate URL(s) but none validated`
-          : "No job-related sitemap URLs found",
-    },
-    jobsUrl: null,
-    platform: null,
-  };
 }
-async function guessCommonPaths(startUrl: string): Promise<{
-  attempt: DiscoveryAttempt;
-  jobsUrl: string | null;
-  platform: string | null;
-}> {
+
+async function guessCommonPaths(startUrl: string): Promise<CandidateCollectionResult> {
   const startedAt = Date.now();
-  const companyTokens = getCompanyTokens(startUrl);
   const origin = new URL(startUrl).origin;
-  const failures: string[] = [];
-
-  for (const path of FALLBACK_PATHS) {
-    const candidateUrl = new URL(path, origin).toString();
-    const finalized = await finalizeCandidateUrl(candidateUrl, startUrl, companyTokens, { checkSoft404Title: true });
-
-    if (finalized) {
-      return {
-        attempt: {
-          method: "path_guess",
-          status: "found",
-          foundUrl: finalized.jobsUrl,
-          durationMs: Date.now() - startedAt,
-          message: `Matched fallback path ${path}`,
-        },
-        jobsUrl: finalized.jobsUrl,
-        platform: finalized.platform,
-      };
-    }
-
-    failures.push(`${path}: miss`);
-  }
+  const candidates = FALLBACK_PATHS.map((path) => ({
+    url: new URL(path, origin).toString(),
+    source: "path" as const,
+  }));
 
   return {
     attempt: {
@@ -802,18 +766,14 @@ async function guessCommonPaths(startUrl: string): Promise<{
       status: "not_found",
       foundUrl: null,
       durationMs: Date.now() - startedAt,
-      message:
-        failures.length > 0
-          ? failures.join(" | ")
-          : "No fallback paths matched",
+      message: `Generated ${candidates.length} fallback path candidate(s)`,
     },
-    jobsUrl: null,
-    platform: null,
+    candidates,
   };
 }
 
-async function guessDutchRecruitmentDomains(startUrl: string): Promise<FinalizedCandidate | null> {
-  const companyTokens = getCompanyTokens(startUrl);
+async function guessDutchRecruitmentDomains(startUrl: string): Promise<CandidateCollectionResult> {
+  const startedAt = Date.now();
   const companyLabel = getRootDomainLabel(startUrl).toLowerCase();
   const compactLabel = companyLabel.replace(/[^a-z0-9]/gi, "");
   const dashedLabel = companyLabel.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "");
@@ -822,25 +782,132 @@ async function guessDutchRecruitmentDomains(startUrl: string): Promise<Finalized
     `https://werkenbij-${compactLabel}.nl`,
     dashedLabel ? `https://werkenbij-${dashedLabel}.nl` : null,
   ].filter((value): value is string => Boolean(value));
-  const candidateUrls = new Set<string>();
+  const candidates = new Map<string, Candidate>();
 
   for (const baseUrl of candidateBases) {
-    candidateUrls.add(baseUrl);
+    addCandidate(candidates, { url: baseUrl, source: "subdomain" });
 
     for (const path of ["/vacatures", "/jobs", "/careers", "/werken-bij", "/werkenbij"]) {
-      candidateUrls.add(new URL(path, `${baseUrl}/`).toString());
+      addCandidate(candidates, {
+        url: new URL(path, `${baseUrl}/`).toString(),
+        source: "subdomain",
+      });
     }
   }
 
-  for (const candidateUrl of candidateUrls) {
-    const finalized = await finalizeCandidateUrl(candidateUrl, startUrl, companyTokens, { checkSoft404Title: true });
+  return {
+    attempt: {
+      method: "path_guess",
+      status: "not_found",
+      foundUrl: null,
+      durationMs: Date.now() - startedAt,
+      message: `Generated ${candidates.size} recruitment subdomain candidate(s)`,
+    },
+    candidates: [...candidates.values()],
+  };
+}
+
+function shouldCheckSoft404(candidate: Candidate): boolean {
+  return candidate.source === "path" || candidate.source === "subdomain";
+}
+
+function mapSourceToMethod(source: Candidate["source"]): DiscoveryMethod {
+  if (source === "sitemap") {
+    return "sitemap";
+  }
+
+  if (source === "path" || source === "subdomain") {
+    return "path_guess";
+  }
+
+  return "crawl";
+}
+
+async function selectBestCandidate(startUrl: string, candidates: Candidate[]): Promise<CandidateSelection> {
+  const companyTokens = getCompanyTokens(startUrl);
+  const businessName = getRootDomainLabel(startUrl);
+  const scoredCandidates = candidates
+    .map((candidate) => ({
+      ...candidate,
+      score: scoreCandidate(candidate, businessName),
+      reasons: explainCandidateScore(candidate, businessName),
+    }))
+    .sort((left, right) => right.score - left.score);
+
+  console.log(
+    "Job discovery candidate scores:",
+    scoredCandidates.map((candidate) => ({
+      url: candidate.url,
+      source: candidate.source,
+      score: candidate.score,
+      reasons: candidate.reasons,
+    }))
+  );
+
+  const bestCandidate = scoredCandidates[0] ?? null;
+
+  if (!bestCandidate || bestCandidate.score < SCORE_WEIGHTS.minimumAcceptedScore) {
+    return {
+      finalized: null,
+      selected: bestCandidate,
+      scoredCandidates,
+    };
+  }
+
+  const seenUrls = new Set<string>();
+
+  for (const candidate of scoredCandidates) {
+    if (candidate.score < SCORE_WEIGHTS.minimumAcceptedScore) {
+      break;
+    }
+
+    const normalizedUrl = normalizeStoredUrl(candidate.url);
+
+    if (seenUrls.has(normalizedUrl)) {
+      continue;
+    }
+
+    seenUrls.add(normalizedUrl);
+
+    const finalized = await finalizeCandidateUrl(
+      candidate.url,
+      startUrl,
+      companyTokens,
+      { checkSoft404Title: shouldCheckSoft404(candidate) }
+    );
 
     if (finalized) {
-      return finalized;
+      return {
+        finalized,
+        selected: candidate,
+        scoredCandidates,
+      };
     }
   }
 
-  return null;
+  return {
+    finalized: null,
+    selected: bestCandidate,
+    scoredCandidates,
+  };
+}
+
+function updateAttemptWithSelection(
+  attempt: DiscoveryAttempt,
+  sources: Candidate["source"][],
+  selected: ScoredCandidate | null,
+  finalized: FinalizedCandidate | null
+): DiscoveryAttempt {
+  if (!selected || !finalized || !sources.includes(selected.source)) {
+    return attempt;
+  }
+
+  return {
+    ...attempt,
+    status: "found",
+    foundUrl: finalized.jobsUrl,
+    message: `${attempt.message} | selected ${selected.source} candidate with score ${selected.score}`,
+  };
 }
 
 export async function discoverByHeuristics(website: string): Promise<JobPageDiscoveryResult> {
@@ -865,94 +932,43 @@ export async function discoverByHeuristics(website: string): Promise<JobPageDisc
   }
 
   const crawlResult = await crawlForJobPage(reachability.finalUrl);
-
-  if (crawlResult.attempt.status === "found") {
-    return {
-      status: "found",
-      jobsUrl: crawlResult.jobsUrl,
-      method: crawlResult.attempt.method,
-      platform: crawlResult.platform,
-      attempts: [crawlResult.attempt],
-    };
-  }
-
-  const footerResult = await inspectFooterForJobPage(reachability.finalUrl);
-
-  if (footerResult.attempt.status === "found") {
-    return {
-      status: "found",
-      jobsUrl: footerResult.jobsUrl,
-      method: footerResult.attempt.method,
-      platform: footerResult.platform,
-      attempts: [crawlResult.attempt, footerResult.attempt],
-    };
-  }
-
+  const htmlResult = await inspectFooterForJobPage(reachability.finalUrl);
   const sitemapResult = await discoverFromSitemapCandidates(reachability.finalUrl);
-
-  if (sitemapResult.attempt.status === "found") {
-    return {
-      status: "found",
-      jobsUrl: sitemapResult.jobsUrl,
-      method: sitemapResult.attempt.method,
-      platform: sitemapResult.platform,
-      attempts: [crawlResult.attempt, footerResult.attempt, sitemapResult.attempt],
-    };
-  }
-
   const fallbackResult = await guessCommonPaths(reachability.finalUrl);
+  const subdomainResult = await guessDutchRecruitmentDomains(reachability.finalUrl);
 
-  if (fallbackResult.attempt.status === "found") {
+  const allCandidates = [
+    ...crawlResult.candidates,
+    ...htmlResult.candidates,
+    ...sitemapResult.candidates,
+    ...fallbackResult.candidates,
+    ...subdomainResult.candidates,
+  ];
+
+  const selection = await selectBestCandidate(reachability.finalUrl, allCandidates);
+  const attempts = [
+    updateAttemptWithSelection(crawlResult.attempt, ["crawl"], selection.selected, selection.finalized),
+    updateAttemptWithSelection(htmlResult.attempt, ["html"], selection.selected, selection.finalized),
+    updateAttemptWithSelection(sitemapResult.attempt, ["sitemap"], selection.selected, selection.finalized),
+    updateAttemptWithSelection(fallbackResult.attempt, ["path"], selection.selected, selection.finalized),
+    updateAttemptWithSelection(subdomainResult.attempt, ["subdomain"], selection.selected, selection.finalized),
+  ];
+
+  if (selection.finalized && selection.selected) {
     return {
       status: "found",
-      jobsUrl: fallbackResult.jobsUrl,
-      method: fallbackResult.attempt.method,
-      platform: fallbackResult.platform,
-      attempts: [crawlResult.attempt, footerResult.attempt, sitemapResult.attempt, fallbackResult.attempt],
-    };
-  }
-
-  const dutchRecruitmentResult = await guessDutchRecruitmentDomains(reachability.finalUrl);
-
-  if (dutchRecruitmentResult) {
-    return {
-      status: "found",
-      jobsUrl: dutchRecruitmentResult.jobsUrl,
-      method: "path_guess",
-      platform: dutchRecruitmentResult.platform,
-      attempts: [
-        crawlResult.attempt,
-        footerResult.attempt,
-        sitemapResult.attempt,
-        fallbackResult.attempt,
-        {
-          method: "path_guess",
-          status: "found",
-          foundUrl: dutchRecruitmentResult.jobsUrl,
-          durationMs: 0,
-          message: "Matched generated Dutch recruitment domain",
-        },
-      ],
+      jobsUrl: selection.finalized.jobsUrl,
+      method: mapSourceToMethod(selection.selected.source),
+      platform: selection.finalized.platform,
+      attempts,
     };
   }
 
   return {
-    status:
-      crawlResult.attempt.status === "error" &&
-        fallbackResult.attempt.status === "not_found"
-        ? "error"
-        : fallbackResult.attempt.status,
+    status: allCandidates.length === 0 && attempts.every((attempt) => attempt.status === "error") ? "error" : "not_found",
     jobsUrl: null,
     method: null,
     platform: null,
-    attempts: [crawlResult.attempt, footerResult.attempt, sitemapResult.attempt, fallbackResult.attempt],
+    attempts,
   };
 }
-
-
-
-
-
-
-
-

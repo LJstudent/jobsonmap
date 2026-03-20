@@ -22,7 +22,9 @@ function extractLocValues(xml: string): string[] {
 
   for (const match of matches) {
     const rawValue = match[1]?.trim();
-    if (!rawValue) continue;
+    if (!rawValue) {
+      continue;
+    }
 
     values.push(rawValue.replace(/<!\[CDATA\[|\]\]>/g, "").trim());
   }
@@ -45,38 +47,6 @@ function toAbsoluteUrl(value: string, startUrl: string): string | null {
 function isJobRelatedUrl(url: string): boolean {
   const normalized = url.toLowerCase();
   return JOB_URL_PATTERNS.some((pattern) => normalized.includes(pattern));
-}
-
-function isLikelyDetailPage(url: string): boolean {
-  const lastSegment = url.split("/").pop() ?? "";
-
-  return (
-    lastSegment.includes("vacature") &&
-    lastSegment.split("-").length >= 3
-  );
-}
-
-function scoreJobUrl(url: string): number {
-  const lower = url.toLowerCase();
-  let score = 0;
-
-  // 🔥 Strong signals (listing pages)
-  if (lower.includes("werken-bij")) score += 10;
-  if (lower.includes("careers")) score += 10;
-  if (lower.includes("jobs")) score += 10;
-  if (lower.includes("vacatures")) score += 10;
-
-  // ⚠️ Weak signals
-  if (lower.includes("job")) score += 3;
-
-  // ❌ Penalize detail pages
-  if (lower.includes("vacature")) score -= 5;
-
-  // ❌ Penalize long slugs (likely detail pages)
-  const lastSegment = lower.split("/").pop() ?? "";
-  if (lastSegment.split("-").length > 3) score -= 3;
-
-  return score;
 }
 
 async function fetchSitemapXml(url: string): Promise<string | null> {
@@ -105,25 +75,34 @@ async function crawlSitemap(
   visitedSitemaps: Set<string>,
   discoveredUrls: Set<string>
 ): Promise<void> {
-  if (depth > MAX_SITEMAP_DEPTH) return;
+  if (depth > MAX_SITEMAP_DEPTH) {
+    return;
+  }
 
   const normalizedSitemapUrl = normalizeStoredUrl(sitemapUrl);
 
-  if (visitedSitemaps.has(normalizedSitemapUrl)) return;
+  if (visitedSitemaps.has(normalizedSitemapUrl)) {
+    return;
+  }
 
   visitedSitemaps.add(normalizedSitemapUrl);
 
   const xml = await fetchSitemapXml(normalizedSitemapUrl);
-  if (!xml) return;
+  if (!xml) {
+    return;
+  }
 
   const locValues = extractLocValues(xml);
-  if (locValues.length === 0) return;
+  if (locValues.length === 0) {
+    return;
+  }
 
-  // Handle sitemap index
   if (isSitemapIndex(xml)) {
     for (const locValue of locValues) {
       const nestedSitemapUrl = toAbsoluteUrl(locValue, startUrl);
-      if (!nestedSitemapUrl) continue;
+      if (!nestedSitemapUrl) {
+        continue;
+      }
 
       await crawlSitemap(
         nestedSitemapUrl,
@@ -133,14 +112,16 @@ async function crawlSitemap(
         discoveredUrls
       );
     }
+
     return;
   }
 
-  // Handle normal sitemap
   for (const locValue of locValues) {
     const candidateUrl = toAbsoluteUrl(locValue, startUrl);
 
-    if (!candidateUrl || !isJobRelatedUrl(candidateUrl)) continue;
+    if (!candidateUrl || !isJobRelatedUrl(candidateUrl)) {
+      continue;
+    }
 
     discoveredUrls.add(candidateUrl);
   }
@@ -159,24 +140,5 @@ export async function discoverFromSitemap(startUrl: string): Promise<string[]> {
     discoveredUrls
   );
 
-  const candidates = [...discoveredUrls];
-
-  if (candidates.length === 0) {
-    return [];
-  }
-
-  // 🔥 Step 1 — filter out detail pages if possible
-  const filtered = candidates.filter((url) => !isLikelyDetailPage(url));
-  const finalCandidates = filtered.length > 0 ? filtered : candidates;
-
-  // 🔥 Step 2 — score & sort
-  const scored = finalCandidates
-    .map((url) => ({
-      url,
-      score: scoreJobUrl(url),
-    }))
-    .sort((a, b) => b.score - a.score);
-
-  // 🔥 Step 3 — return best candidate FIRST
-  return scored.map((entry) => entry.url);
+  return [...discoveredUrls];
 }
