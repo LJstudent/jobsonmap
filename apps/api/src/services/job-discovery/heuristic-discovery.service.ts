@@ -63,6 +63,10 @@ const STRONG_JOB_KEYWORDS = [
   "open-positions",
   "werken-bij",
   "werkenbij",
+  "job",
+  "career",
+  "working-at",
+  "kom-werken"
 ];
 
 const WEAK_JOB_KEYWORDS = [
@@ -73,14 +77,16 @@ const WEAK_JOB_KEYWORDS = [
 ];
 
 const FALSE_POSITIVE_PATTERNS = [
-  "hoe-wij-werken",
-  "how-we-work",
-  "thuiswerken",
-  "/faq",
-  "/blog",
-  "/blogs",
-  "/news",
-  "/insights",
+  "blog",
+  "news",
+  "nieuws",
+  "privacy",
+  "terms",
+  "policy",
+  "voorwaarden",
+  "product",
+  "diensten",
+  "service",
 ];
 
 const ATS_PATTERNS = [
@@ -90,6 +96,7 @@ const ATS_PATTERNS = [
   { provider: "teamtailor", pattern: /(^|\.)teamtailor\.com$/i },
   { provider: "recruitee", pattern: /(^|\.)recruitee\.com$/i },
   { provider: "workable", pattern: /(^|\.)workable\.com$/i },
+  { provider: "homerun", pattern: /(^|\.)homerun\.co$/i },
 ];
 
 const RECRUITMENT_HOST_KEYWORDS = ["werkenbij", "jobs", "careers"];
@@ -319,22 +326,15 @@ function extractLinks(html: string, baseUrl: string, companyTokens: string[]): E
 }
 
 function extractFooterHtml(html: string): string {
-  if (!html.includes("footer")) {
-    return "";
-  }
+  const lower = html.toLowerCase();
 
-  const segments: string[] = [];
-  const patterns = [
-    /<footer\b[^>]*>[\s\S]*?<\/footer>/gi,
-    /<(div|section)\b[^>]*(id|class)\s*=\s*["'][^"']*footer[^"']*["'][^>]*>[\s\S]*?<\/\1>/gi,
-  ];
+  const start = lower.indexOf("<footer");
+  if (start === -1) return "";
 
-  for (const pattern of patterns) {
-    const matches = html.match(pattern);
-    if (matches) segments.push(...matches);
-  }
+  const end = lower.indexOf("</footer>", start);
+  if (end === -1) return "";
 
-  return segments.join(" ");
+  return html.slice(start, end + "</footer>".length);
 }
 
 function prioritizeSameDomainLinks(links: ExtractedLink[], rootUrl: string): ExtractedLink[] {
@@ -415,54 +415,86 @@ async function inspectFooterForJobPage(startUrl: string): Promise<{
   try {
     const page = await fetchHtmlPage(startUrl);
     const finalPageUrl = normalizeStoredUrl(page.finalUrl);
+
     const footerHtml = extractFooterHtml(page.html);
 
-    if (!footerHtml) {
-      return {
-        attempt: {
-          method: "crawl",
-          status: "not_found",
-          foundUrl: null,
-          durationMs: Date.now() - startedAt,
-          message: "No footer block found before path guessing",
-        },
-        jobsUrl: null,
-        platform: null,
-      };
-    }
+    const footerLinks = footerHtml
+      ? extractLinks(footerHtml, finalPageUrl, companyTokens)
+      : [];
 
-    const links = extractLinks(footerHtml, finalPageUrl, companyTokens);
-    const externalCandidate = await findExternalCandidate(links, startUrl, companyTokens, true);
+    const allLinks = extractLinks(page.html, finalPageUrl, companyTokens);
 
-    if (externalCandidate) {
+    const links = [
+      ...footerLinks.map((l) => ({ ...l, source: "footer" as const })),
+      ...allLinks.map((l) => ({ ...l, source: "html" as const })),
+    ];
+
+    // 🔥 1. External candidates (ATS etc.)
+    const externalCandidate = await findExternalCandidate(
+      links,
+      startUrl,
+      companyTokens,
+      true
+    );
+
+    console.log(externalCandidate)
+
+    if (
+      externalCandidate &&
+      !hasFalsePositiveHint(externalCandidate.jobsUrl)
+    ) {
       return {
         attempt: {
           method: "crawl",
           status: "found",
           foundUrl: externalCandidate.jobsUrl,
           durationMs: Date.now() - startedAt,
-          message: "Found jobs candidate in footer",
+          message: "Found external jobs candidate (footer/html)",
         },
         jobsUrl: externalCandidate.jobsUrl,
         platform: externalCandidate.platform,
       };
     }
+    console.log(externalCandidate)
 
-    const sameDomainCandidates = prioritizeSameDomainLinks(links, startUrl).filter(
-      (link) => link.strongSignal || link.weakSignal
-    );
+    // 🔥 2. Same-domain candidates (FIXED FILTER)
+    const sameDomainCandidates = prioritizeSameDomainLinks(
+      links,
+      startUrl
+    ).filter((link) => {
+      const combined = `${link.url} ${link.text}`;
 
+      // ❌ Remove blog/news/etc
+      if (hasFalsePositiveHint(combined)) return false;
+
+      return (
+        link.strongSignal ||
+        link.atsProvider || // ATS always allowed
+        (link.weakSignal && !link.aboutSignal)
+      );
+    });
+
+    console.log("Filtered candidates:", sameDomainCandidates);
+
+    // 🔥 3. Finalize candidates safely
     for (const link of sameDomainCandidates) {
-      const finalized = await finalizeCandidateUrl(link.url, startUrl, companyTokens);
+      const finalized = await finalizeCandidateUrl(
+        link.url,
+        startUrl,
+        companyTokens
+      );
 
-      if (finalized) {
+      if (
+        finalized &&
+        !hasFalsePositiveHint(finalized.jobsUrl)
+      ) {
         return {
           attempt: {
             method: "crawl",
             status: "found",
             foundUrl: finalized.jobsUrl,
             durationMs: Date.now() - startedAt,
-            message: "Found same-domain jobs candidate in footer",
+            message: "Found same-domain jobs candidate",
           },
           jobsUrl: finalized.jobsUrl,
           platform: finalized.platform,
@@ -476,7 +508,7 @@ async function inspectFooterForJobPage(startUrl: string): Promise<{
         status: "not_found",
         foundUrl: null,
         durationMs: Date.now() - startedAt,
-        message: "No footer job links matched before path guessing",
+        message: "No job links found",
       },
       jobsUrl: null,
       platform: null,
@@ -495,7 +527,6 @@ async function inspectFooterForJobPage(startUrl: string): Promise<{
     };
   }
 }
-
 async function crawlForJobPage(startUrl: string): Promise<{
   attempt: DiscoveryAttempt;
   jobsUrl: string | null;
