@@ -4,20 +4,26 @@ import path from 'node:path';
 export type DiscoveryLogType =
   | 'results'
   | 'scoring'
+  | 'debug-priority'
   | 'decision'
+  | 'skipped'
   | 'low-confidence'
   | 'errors';
 
 type DiscoveryLogEntry = {
   timestamp: string;
+  runId: string;
   type: DiscoveryLogType;
   payload: Record<string, unknown>;
 };
 
 const LOG_DIRECTORY = path.resolve(process.cwd(), 'logs', 'job-discovery');
 
+// ✅ Create a safe run id (no ":" or "." for Windows/filesystems)
+const RUN_ID = new Date().toISOString().replace(/[:.]/g, '-');
+
 function getLogFilePath(type: DiscoveryLogType): string {
-  return path.join(LOG_DIRECTORY, `${type}.jsonl`);
+  return path.join(LOG_DIRECTORY, `${type}-${RUN_ID}.jsonl`);
 }
 
 export function logDiscovery(
@@ -26,11 +32,13 @@ export function logDiscovery(
 ): void {
   const entry: DiscoveryLogEntry = {
     timestamp: new Date().toISOString(),
+    runId: RUN_ID,
     type,
     payload,
   };
 
   mkdirSync(LOG_DIRECTORY, { recursive: true });
+
   appendFileSync(
     getLogFilePath(type),
     JSON.stringify(entry, null, 2) + '\n\n',

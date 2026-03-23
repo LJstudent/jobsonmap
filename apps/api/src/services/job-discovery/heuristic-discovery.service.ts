@@ -80,15 +80,18 @@ const STRONG_JOB_KEYWORDS = [
   'vacature',
   'jobs',
   'careers',
-  'join-us',
-  'join-our-team',
-  'open-positions',
-  'werken-bij',
+
+  // ✅ FIXED
+  'join us',
+  'join our team',
+  'open positions',
+  'werken bij',
   'werkenbij',
+  'working at',
+  'kom werken',
+
   'job',
   'career',
-  'working-at',
-  'kom-werken',
 ];
 
 const WEAK_JOB_KEYWORDS = ['work', 'werken', 'positions', 'opportunities'];
@@ -1003,6 +1006,7 @@ async function selectBestCandidate(
 ): Promise<CandidateSelection> {
   const companyTokens = getCompanyTokens(startUrl);
   const businessName = getRootDomainLabel(startUrl);
+  const minimumSkippedLogScore = SCORE_WEIGHTS.minimumAcceptedScore - 5;
   const scoredCandidates = candidates
     .map((candidate) => ({
       ...candidate,
@@ -1022,6 +1026,28 @@ async function selectBestCandidate(
     website: startUrl,
     candidateCount: scoredCandidates.length,
     topCandidates,
+  });
+
+  const overviewCandidates = scoredCandidates.filter((candidate) =>
+    isLikelyJobOverviewPage(candidate.url),
+  );
+  const detailCandidates = scoredCandidates.filter((candidate) =>
+    hasJobDetailPattern(candidate.url),
+  );
+  const prioritizedCandidates =
+    overviewCandidates.length > 0
+      ? [
+          ...overviewCandidates,
+          ...scoredCandidates.filter(
+            (candidate) => !isLikelyJobOverviewPage(candidate.url),
+          ),
+        ]
+      : scoredCandidates;
+
+  logDiscovery('debug-priority', {
+    website: startUrl,
+    overviewCount: overviewCandidates.length,
+    detailCount: detailCandidates.length,
   });
 
   const bestCandidate = scoredCandidates[0] ?? null;
@@ -1046,19 +1072,53 @@ async function selectBestCandidate(
   }
 
   const seenUrls = new Set<string>();
+  let skippedLogCount = 0;
 
-  for (const candidate of scoredCandidates) {
+  function logSkippedCandidate(payload: Record<string, unknown>): void {
+    const score =
+      typeof payload.score === 'number'
+        ? payload.score
+        : Number.NEGATIVE_INFINITY;
+
+    if (score < minimumSkippedLogScore || skippedLogCount >= 20) {
+      return;
+    }
+
+    skippedLogCount += 1;
+    logDiscovery('skipped', payload);
+  }
+
+  for (const candidate of prioritizedCandidates) {
     if (candidate.score < SCORE_WEIGHTS.minimumAcceptedScore) {
+      logSkippedCandidate({
+        website: startUrl,
+        url: candidate.url,
+        score: candidate.score,
+        reason: 'below-min-score',
+      });
       break;
     }
 
     if (!hasJobIntent(candidate)) {
+      logSkippedCandidate({
+        website: startUrl,
+        url: candidate.url,
+        score: candidate.score,
+        reasons: candidate.reasons,
+        reason: 'no-job-intent',
+      });
       continue;
     }
 
     const dedupeKey = getCandidateDedupeKey(candidate.url);
 
     if (!dedupeKey || seenUrls.has(dedupeKey)) {
+      logSkippedCandidate({
+        website: startUrl,
+        url: candidate.url,
+        score: candidate.score,
+        reason: 'duplicate',
+      });
       continue;
     }
 
@@ -1090,6 +1150,12 @@ async function selectBestCandidate(
     }
 
     console.log('REJECTED:', candidate.url);
+    logSkippedCandidate({
+      website: startUrl,
+      url: candidate.url,
+      score: candidate.score,
+      reason: 'finalize-failed',
+    });
   }
 
   logDiscovery('low-confidence', {
