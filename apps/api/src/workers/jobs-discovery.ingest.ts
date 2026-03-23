@@ -1,8 +1,9 @@
 import "dotenv/config";
-import { and, asc, eq, isNotNull, ne, desc } from "drizzle-orm";
+import { and, asc, eq, isNotNull, ne } from "drizzle-orm";
 import { db } from "../db";
 import { businesses } from "../schema/businesses";
 import { jobDiscoveryRuns } from "../schema/job_discovery_runs";
+import { logDiscovery } from "../services/job-discovery/discovery-logger";
 import { JobPageDiscoveryService } from "../services/job-discovery/job-page-discovery.service";
 import { type DiscoveryStatus } from "../services/job-discovery/heuristic-discovery.service";
 
@@ -105,6 +106,27 @@ async function run() {
       console.log(`Discovering jobs page for ${row.name} (${row.website})`);
       const result = await persistDiscoveryResult(row);
       summary[result.status] += 1;
+      logDiscovery("results", {
+        businessId: row.id,
+        name: row.name,
+        website: row.website,
+        status: result.status,
+        jobsUrl: result.jobsUrl,
+        method: result.method,
+        platform: result.platform,
+        attempts: result.attempts,
+      });
+
+      if (result.status === "error") {
+        logDiscovery("errors", {
+          businessId: row.id,
+          name: row.name,
+          website: row.website,
+          attempts: result.attempts,
+          reason: "discovery-returned-error-status",
+        });
+      }
+
       console.log(
         `Finished ${row.name} -> ${result.status}${result.jobsUrl ? ` | ${result.jobsUrl}` : ""}${result.platform ? ` | ${result.platform}` : ""}`
       );
@@ -134,6 +156,13 @@ async function run() {
         });
       });
 
+      logDiscovery("errors", {
+        businessId: row.id,
+        name: row.name,
+        website: row.website,
+        message,
+        reason: "worker-exception",
+      });
       console.error(`Discovery failed for ${row.name}: ${message}`);
     }
   });

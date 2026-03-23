@@ -11,6 +11,7 @@ import {
   resolveReachableUrl,
   testLightweightUrl,
 } from "./http-client";
+import { logDiscovery } from "./discovery-logger";
 import { discoverFromSitemap } from "./sitemap-discovery.service";
 
 export type DiscoveryStatus = "found" | "not_found" | "error";
@@ -834,19 +835,31 @@ async function selectBestCandidate(startUrl: string, candidates: Candidate[]): P
     }))
     .sort((left, right) => right.score - left.score);
 
-  console.log(
-    "Job discovery candidate scores:",
-    scoredCandidates.map((candidate) => ({
-      url: candidate.url,
-      source: candidate.source,
-      score: candidate.score,
-      reasons: candidate.reasons,
-    }))
-  );
+  const topCandidates = scoredCandidates.slice(0, 5).map((candidate) => ({
+    url: candidate.url,
+    source: candidate.source,
+    score: candidate.score,
+    reasons: candidate.reasons,
+  }));
+
+  console.log("Job discovery top candidates:", topCandidates);
+  logDiscovery("results", {
+    website: startUrl,
+    candidateCount: scoredCandidates.length,
+    topCandidates,
+  });
 
   const bestCandidate = scoredCandidates[0] ?? null;
 
   if (!bestCandidate || bestCandidate.score < SCORE_WEIGHTS.minimumAcceptedScore) {
+    logDiscovery("low-confidence", {
+      website: startUrl,
+      minimumAcceptedScore: SCORE_WEIGHTS.minimumAcceptedScore,
+      bestCandidate,
+      topCandidates,
+      reason: !bestCandidate ? "no-candidates" : "score-below-threshold",
+    });
+
     return {
       finalized: null,
       selected: bestCandidate,
@@ -885,6 +898,14 @@ async function selectBestCandidate(startUrl: string, candidates: Candidate[]): P
     }
   }
 
+  logDiscovery("low-confidence", {
+    website: startUrl,
+    minimumAcceptedScore: SCORE_WEIGHTS.minimumAcceptedScore,
+    bestCandidate,
+    topCandidates,
+    reason: "candidate-finalization-failed",
+  });
+
   return {
     finalized: null,
     selected: bestCandidate,
@@ -912,17 +933,28 @@ function updateAttemptWithSelection(
 
 export async function discoverByHeuristics(website: string): Promise<JobPageDiscoveryResult> {
   const reachability = await resolveReachableUrl(website);
+  const unreachableStatus =
+    reachability.statusCode && reachability.statusCode < 500 ? "not_found" : "error";
 
   if (!reachability.reachable || !reachability.finalUrl) {
+    if (unreachableStatus === "error") {
+      logDiscovery("errors", {
+        website,
+        statusCode: reachability.statusCode ?? null,
+        message: reachability.message,
+        reason: "website-unreachable",
+      });
+    }
+
     return {
-      status: reachability.statusCode && reachability.statusCode < 500 ? "not_found" : "error",
+      status: unreachableStatus,
       jobsUrl: null,
       method: null,
       platform: null,
       attempts: [
         {
           method: "crawl",
-          status: reachability.statusCode && reachability.statusCode < 500 ? "not_found" : "error",
+          status: unreachableStatus,
           foundUrl: null,
           durationMs: 0,
           message: `Website unreachable: ${reachability.message}`,
@@ -962,6 +994,14 @@ export async function discoverByHeuristics(website: string): Promise<JobPageDisc
       platform: selection.finalized.platform,
       attempts,
     };
+  }
+
+  if (allCandidates.length === 0 && attempts.every((attempt) => attempt.status === "error")) {
+    logDiscovery("errors", {
+      website: reachability.finalUrl,
+      attempts,
+      reason: "all-discovery-methods-failed",
+    });
   }
 
   return {
