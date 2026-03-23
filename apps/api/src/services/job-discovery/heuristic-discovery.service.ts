@@ -94,6 +94,7 @@ const STRONG_JOB_KEYWORDS = [
 const WEAK_JOB_KEYWORDS = ['work', 'werken', 'positions', 'opportunities'];
 
 const FALSE_POSITIVE_PATTERNS = [
+  // content pages
   'blog',
   'news',
   'nieuws',
@@ -101,9 +102,40 @@ const FALSE_POSITIVE_PATTERNS = [
   'terms',
   'policy',
   'voorwaarden',
+
+  // business / marketing
   'product',
+  'producten',
   'diensten',
   'service',
+  'solutions',
+  'oplossingen',
+
+  // ❗ NEW: company pages (VERY IMPORTANT)
+  'about',
+  'about-us',
+  'over-ons',
+  'company',
+  'organisatie',
+
+  // ❗ NEW: people pages
+  'team',
+  'people',
+  'medewerker',
+  'medewerkers',
+  'employee',
+  'ons-team',
+
+  // ❗ NEW: portfolio / projects
+  'project',
+  'projecten',
+  'cases',
+  'portfolio',
+  'ons-werk',
+  'our-work',
+  'completed',
+  'recent-work',
+  'case-study',
 ];
 
 const ATS_PATTERNS = [
@@ -141,11 +173,14 @@ const MAX_LINKS_PER_PAGE = 25;
 const SCORE_WEIGHTS = {
   strongKeyword: 10,
   weakKeyword: 3,
-  falsePositiveWithoutJobKeyword: -15,
+  falsePositivePenalty: -40,
+  portfolioContextPenalty: -50,
   overviewBonus: 5,
   businessNameBonus: 3,
   atsBonus: 5,
   detailPenalty: -5,
+  sameDomainBonus: 10,
+  externalDomainPenalty: -2,
   source: {
     subdomain: 8,
     path: 6,
@@ -153,7 +188,7 @@ const SCORE_WEIGHTS = {
     html: 4,
     crawl: 2,
   } satisfies Record<Candidate['source'], number>,
-  minimumAcceptedScore: 5,
+  minimumAcceptedScore: 15,
 } as const;
 
 function containsStrongKeyword(value: string): boolean {
@@ -174,6 +209,10 @@ function getKeywordMatches(
 ): string[] {
   const normalized = value.toLowerCase();
   return keywords.filter((keyword) => normalized.includes(keyword));
+}
+
+function normalizeUrlForMatching(url: string): string {
+  return url.toLowerCase().replace(/-/g, ' ').replace(/_/g, ' ');
 }
 
 function detectAtsProvider(url: string): string | null {
@@ -316,11 +355,12 @@ function normalizeBusinessNameTokens(businessName: string): string[] {
     : [...new Set(splitTokens)];
 }
 
-export function scoreCandidate(
+function getCandidateScoreBreakdown(
   candidate: Candidate,
   businessName: string,
-): number {
-  const normalizedUrl = candidate.url.toLowerCase();
+  startUrl: string,
+): { score: number; reasons: string[] } {
+  const normalizedUrl = normalizeUrlForMatching(candidate.url);
   const strongMatches = getKeywordMatches(normalizedUrl, STRONG_JOB_KEYWORDS);
   const weakMatches = getKeywordMatches(normalizedUrl, WEAK_JOB_KEYWORDS);
   const falsePositiveMatches = getKeywordMatches(
@@ -328,91 +368,98 @@ export function scoreCandidate(
     FALSE_POSITIVE_PATTERNS,
   );
   const businessTokens = normalizeBusinessNameTokens(businessName);
-
   let score = 0;
-
-  score += strongMatches.length * SCORE_WEIGHTS.strongKeyword;
-  score += weakMatches.length * SCORE_WEIGHTS.weakKeyword;
-
-  if (
-    strongMatches.length === 0 &&
-    weakMatches.length === 0 &&
-    falsePositiveMatches.length > 0
-  ) {
-    score += SCORE_WEIGHTS.falsePositiveWithoutJobKeyword;
-  }
-
-  if (isLikelyJobOverviewPage(candidate.url)) {
-    score += SCORE_WEIGHTS.overviewBonus;
-  }
-
-  if (businessTokens.some((token) => normalizedUrl.includes(token))) {
-    score += SCORE_WEIGHTS.businessNameBonus;
-  }
-
-  if (detectAtsProvider(candidate.url)) {
-    score += SCORE_WEIGHTS.atsBonus;
-  }
-
-  if (hasJobDetailPattern(candidate.url)) {
-    score += SCORE_WEIGHTS.detailPenalty;
-  }
-
-  score += SCORE_WEIGHTS.source[candidate.source];
-
-  return score;
-}
-
-function explainCandidateScore(
-  candidate: Candidate,
-  businessName: string,
-): string[] {
-  const normalizedUrl = candidate.url.toLowerCase();
-  const strongMatches = getKeywordMatches(normalizedUrl, STRONG_JOB_KEYWORDS);
-  const weakMatches = getKeywordMatches(normalizedUrl, WEAK_JOB_KEYWORDS);
-  const falsePositiveMatches = getKeywordMatches(
-    normalizedUrl,
-    FALSE_POSITIVE_PATTERNS,
-  );
-  const businessTokens = normalizeBusinessNameTokens(businessName);
   const reasons: string[] = [];
 
   if (strongMatches.length > 0) {
+    score += strongMatches.length * SCORE_WEIGHTS.strongKeyword;
     reasons.push(`strong=${strongMatches.join(',')}`);
   }
 
   if (weakMatches.length > 0) {
+    score += weakMatches.length * SCORE_WEIGHTS.weakKeyword;
     reasons.push(`weak=${weakMatches.join(',')}`);
   }
 
+  if (falsePositiveMatches.length > 0) {
+    score += SCORE_WEIGHTS.falsePositivePenalty;
+    reasons.push(`negative=${falsePositiveMatches.join(',')}`);
+  }
+
   if (
-    strongMatches.length === 0 &&
-    weakMatches.length === 0 &&
-    falsePositiveMatches.length > 0
+    normalizedUrl.includes('jobs') &&
+    falsePositiveMatches.some((pattern) =>
+      ['completed', 'project', 'case', 'portfolio'].includes(pattern),
+    )
   ) {
-    reasons.push(`false-positive=${falsePositiveMatches.join(',')}`);
+    score += SCORE_WEIGHTS.portfolioContextPenalty;
+    reasons.push('negative=jobs-with-portfolio-context');
   }
 
   if (isLikelyJobOverviewPage(candidate.url)) {
+    score += SCORE_WEIGHTS.overviewBonus;
     reasons.push('overview');
   }
 
   if (businessTokens.some((token) => normalizedUrl.includes(token))) {
+    score += SCORE_WEIGHTS.businessNameBonus;
     reasons.push('business-name');
+  }
+
+  if (businessTokens.some((token) => normalizedUrl.includes(token))) {
+    score += SCORE_WEIGHTS.businessNameBonus;
+    reasons.push('business-name');
+  }
+
+  if (isSameRootDomain(candidate.url, startUrl)) {
+    score += SCORE_WEIGHTS.sameDomainBonus;
+    reasons.push('same-domain');
+  } else {
+    score += SCORE_WEIGHTS.externalDomainPenalty;
+    reasons.push('external-domain');
   }
 
   const atsProvider = detectAtsProvider(candidate.url);
   if (atsProvider) {
+    score += SCORE_WEIGHTS.atsBonus;
     reasons.push(`ats=${atsProvider}`);
   }
 
   if (hasJobDetailPattern(candidate.url)) {
+    score += SCORE_WEIGHTS.detailPenalty;
     reasons.push('detail-page');
   }
 
+  score += SCORE_WEIGHTS.source[candidate.source];
   reasons.push(`source=${candidate.source}`);
 
-  return reasons;
+  return { score, reasons };
+}
+
+export function scoreCandidate(
+  candidate: Candidate,
+  businessName: string,
+  startUrl: string,
+): number {
+  return getCandidateScoreBreakdown(candidate, businessName, startUrl).score;
+}
+
+function hasJobIntent(candidate: Pick<ScoredCandidate, 'reasons'>): boolean {
+  return candidate.reasons.some(
+    (reason) =>
+      reason.includes('strong=') ||
+      reason.includes('ats=') ||
+      reason.includes('overview'),
+  );
+}
+
+function getCandidateDedupeKey(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname + parsed.pathname.replace(/\/+$/, '');
+  } catch {
+    return null;
+  }
 }
 
 function getParentListingUrl(url: string): string | null {
@@ -959,8 +1006,7 @@ async function selectBestCandidate(
   const scoredCandidates = candidates
     .map((candidate) => ({
       ...candidate,
-      score: scoreCandidate(candidate, businessName),
-      reasons: explainCandidateScore(candidate, businessName),
+      ...getCandidateScoreBreakdown(candidate, businessName, startUrl),
     }))
     .sort((left, right) => right.score - left.score);
 
@@ -972,7 +1018,7 @@ async function selectBestCandidate(
   }));
 
   console.log('Job discovery top candidates:', topCandidates);
-  logDiscovery('results', {
+  logDiscovery('scoring', {
     website: startUrl,
     candidateCount: scoredCandidates.length,
     topCandidates,
@@ -994,7 +1040,7 @@ async function selectBestCandidate(
 
     return {
       finalized: null,
-      selected: bestCandidate,
+      selected: null,
       scoredCandidates,
     };
   }
@@ -1006,13 +1052,19 @@ async function selectBestCandidate(
       break;
     }
 
-    const normalizedUrl = normalizeStoredUrl(candidate.url);
-
-    if (seenUrls.has(normalizedUrl)) {
+    if (!hasJobIntent(candidate)) {
       continue;
     }
 
-    seenUrls.add(normalizedUrl);
+    const dedupeKey = getCandidateDedupeKey(candidate.url);
+
+    if (!dedupeKey || seenUrls.has(dedupeKey)) {
+      continue;
+    }
+
+    seenUrls.add(dedupeKey);
+
+    console.log('TRYING:', candidate.url, candidate.score);
 
     const finalized = await finalizeCandidateUrl(
       candidate.url,
@@ -1022,12 +1074,22 @@ async function selectBestCandidate(
     );
 
     if (finalized) {
+      console.log('SELECTED:', candidate.url);
+      logDiscovery('decision', {
+        website: startUrl,
+        selectedUrl: finalized.jobsUrl,
+        score: candidate.score,
+        reason: 'selected-after-finalize',
+      });
+
       return {
         finalized,
         selected: candidate,
         scoredCandidates,
       };
     }
+
+    console.log('REJECTED:', candidate.url);
   }
 
   logDiscovery('low-confidence', {
@@ -1040,7 +1102,7 @@ async function selectBestCandidate(
 
   return {
     finalized: null,
-    selected: bestCandidate,
+    selected: null,
     scoredCandidates,
   };
 }

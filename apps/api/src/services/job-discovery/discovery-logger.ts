@@ -1,7 +1,12 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 
-export type DiscoveryLogType = 'results' | 'low-confidence' | 'errors';
+export type DiscoveryLogType =
+  | 'results'
+  | 'scoring'
+  | 'decision'
+  | 'low-confidence'
+  | 'errors';
 
 type DiscoveryLogEntry = {
   timestamp: string;
@@ -26,5 +31,9 @@ export function logDiscovery(
   };
 
   mkdirSync(LOG_DIRECTORY, { recursive: true });
-  appendFileSync(getLogFilePath(type), `${JSON.stringify(entry)}\n`, 'utf8');
+  appendFileSync(
+    getLogFilePath(type),
+    JSON.stringify(entry, null, 2) + '\n\n',
+    'utf8',
+  );
 }
