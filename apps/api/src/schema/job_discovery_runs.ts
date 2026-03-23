@@ -1,21 +1,21 @@
-import { integer, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
+import { integer, pgTable, serial, text, timestamp } from 'drizzle-orm/pg-core';
 
-export const jobDiscoveryRuns = pgTable("job_discovery_runs", {
-  id: serial("id").primaryKey(),
+export const jobDiscoveryRuns = pgTable('job_discovery_runs', {
+  id: serial('id').primaryKey(),
 
-  businessId: integer("business_id").notNull(),
+  businessId: integer('business_id').notNull(),
 
-  method: text("method"),
+  method: text('method'),
 
-  status: text("status"),
+  status: text('status'),
 
-  foundUrl: text("found_url"),
+  foundUrl: text('found_url'),
 
-  platform: text("platform"),
+  platform: text('platform'),
 
-  durationMs: integer("duration_ms"),
+  durationMs: integer('duration_ms'),
 
-  message: text("message"),
+  message: text('message'),
 
-  createdAt: timestamp("created_at").defaultNow(),
+  createdAt: timestamp('created_at').defaultNow(),
 });

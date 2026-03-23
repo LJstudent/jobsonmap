@@ -18,21 +18,17 @@ const BusinessCard = ({ business }: BusinessCardProps) => {
         <h3 className="font-semibold text-foreground leading-tight">
           {business.name}
         </h3>
-        <span className="hiring-badge whitespace-nowrap">
-          Likely hiring
-        </span>
+        <span className="hiring-badge whitespace-nowrap">Likely hiring</span>
       </div>
-      
+
       <div className="flex items-center gap-1.5 text-muted-foreground mb-3">
         <MapPin className="w-3.5 h-3.5" />
         <span className="text-sm">
           {business.area}, {business.city}
         </span>
       </div>
-      
-      <p className="disclaimer-text">
-        Based on public signals, not confirmed
-      </p>
+
+      <p className="disclaimer-text">Based on public signals, not confirmed</p>
     </motion.div>
   );
 };

@@ -1,7 +1,7 @@
-import { useEffect } from "react";
-import { useMap } from "react-leaflet";
-import L from "leaflet";
-import { cellToBoundary } from "h3-js";
+import { useEffect } from 'react';
+import { useMap } from 'react-leaflet';
+import L from 'leaflet';
+import { cellToBoundary } from 'h3-js';
 
 // nerdview
 // const areaPolygon = [
@@ -30,10 +30,12 @@ const H3HexLayer = ({ cells }: Props) => {
     cells.forEach((cell) => {
       const boundary = cellToBoundary(cell);
 
-      const latlngs = boundary.map((coord) => [coord[0], coord[1]] as [number, number]);
+      const latlngs = boundary.map(
+        (coord) => [coord[0], coord[1]] as [number, number],
+      );
 
       L.polygon(latlngs, {
-        color: "#ff0000",
+        color: '#ff0000',
         weight: 1,
         fillOpacity: 0.1,
       }).addTo(layer);

@@ -1,7 +1,7 @@
-import { appendFileSync, mkdirSync } from "node:fs";
-import path from "node:path";
+import { appendFileSync, mkdirSync } from 'node:fs';
+import path from 'node:path';
 
-export type DiscoveryLogType = "results" | "low-confidence" | "errors";
+export type DiscoveryLogType = 'results' | 'low-confidence' | 'errors';
 
 type DiscoveryLogEntry = {
   timestamp: string;
@@ -9,13 +9,16 @@ type DiscoveryLogEntry = {
   payload: Record<string, unknown>;
 };
 
-const LOG_DIRECTORY = path.resolve(process.cwd(), "logs", "job-discovery");
+const LOG_DIRECTORY = path.resolve(process.cwd(), 'logs', 'job-discovery');
 
 function getLogFilePath(type: DiscoveryLogType): string {
   return path.join(LOG_DIRECTORY, `${type}.jsonl`);
 }
 
-export function logDiscovery(type: DiscoveryLogType, payload: Record<string, unknown>): void {
+export function logDiscovery(
+  type: DiscoveryLogType,
+  payload: Record<string, unknown>,
+): void {
   const entry: DiscoveryLogEntry = {
     timestamp: new Date().toISOString(),
     type,
@@ -23,5 +26,5 @@ export function logDiscovery(type: DiscoveryLogType, payload: Record<string, unk
   };
 
   mkdirSync(LOG_DIRECTORY, { recursive: true });
-  appendFileSync(getLogFilePath(type), `${JSON.stringify(entry)}\n`, "utf8");
+  appendFileSync(getLogFilePath(type), `${JSON.stringify(entry)}\n`, 'utf8');
 }

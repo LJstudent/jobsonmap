@@ -1,5 +1,5 @@
 import { Business } from '@/data/businesses';
-import type { Map as LeafletMap } from "leaflet";
+import type { Map as LeafletMap } from 'leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { Briefcase } from 'lucide-react';
@@ -18,7 +18,7 @@ const createCustomIcon = () => {
   const iconHtml = renderToString(
     <div className="custom-marker">
       <Briefcase size={16} />
-    </div>
+    </div>,
   );
 
   return L.divIcon({
@@ -37,15 +37,18 @@ const FitBounds = ({ businesses }: { businesses: Business[] }) => {
   useEffect(() => {
     if (businesses.length === 0) {
       // Default view showing both Amsterdam and Utrecht
-      map.fitBounds([
-        [52.0800, 4.8500], // Southwest
-        [52.4000, 5.1500], // Northeast
-      ], { padding: [50, 50] });
+      map.fitBounds(
+        [
+          [52.08, 4.85], // Southwest
+          [52.4, 5.15], // Northeast
+        ],
+        { padding: [50, 50] },
+      );
     } else if (businesses.length === 1) {
       map.setView([businesses[0].lat, businesses[0].lng], 14);
     } else {
       const bounds = L.latLngBounds(
-        businesses.map((b) => [b.lat, b.lng] as [number, number])
+        businesses.map((b) => [b.lat, b.lng] as [number, number]),
       );
       map.fitBounds(bounds, { padding: [80, 80], maxZoom: 14 });
     }

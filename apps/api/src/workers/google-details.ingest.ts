@@ -1,20 +1,19 @@
-import "dotenv/config";
-import { and, asc, eq, isNull, or } from "drizzle-orm";
-import { db } from "../db";
-import { businesses } from "../schema/businesses";
-import { fetchPlaceDetails } from "../services/google.service";
+import 'dotenv/config';
+import { and, asc, eq, isNull, or } from 'drizzle-orm';
+import { db } from '../db';
+import { businesses } from '../schema/businesses';
+import { fetchPlaceDetails } from '../services/google.service';
 
-const sleep = (ms: number) =>
-  new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function run() {
   const apiKey = process.env.GOOGLE_API_KEY;
 
   if (!apiKey) {
-    throw new Error("Missing GOOGLE_API_KEY");
+    throw new Error('Missing GOOGLE_API_KEY');
   }
 
-  console.log("Starting Google details enrichment...\n");
+  console.log('Starting Google details enrichment...\n');
 
   const rows = await db
     .select({
@@ -27,8 +26,8 @@ async function run() {
       or(
         isNull(businesses.website),
         isNull(businesses.formattedAddress),
-        eq(businesses.formattedAddress, "")
-      )
+        eq(businesses.formattedAddress, ''),
+      ),
     )
     .orderBy(asc(businesses.id));
 
@@ -54,7 +53,7 @@ async function run() {
       updated++;
 
       console.log(
-        `Updated ${row.name} | website: ${details.website ?? "-"} | address: ${details.formattedAddress ?? "-"}`
+        `Updated ${row.name} | website: ${details.website ?? '-'} | address: ${details.formattedAddress ?? '-'}`,
       );
 
       await sleep(150);
@@ -64,11 +63,11 @@ async function run() {
     }
   }
 
-  console.log("\n====== ENRICH SUMMARY ======");
+  console.log('\n====== ENRICH SUMMARY ======');
   console.log(`Updated: ${updated}`);
   console.log(`Failed: ${failed}`);
 }
 
 run().catch((err) => {
-  console.error("Worker crashed:", err);
+  console.error('Worker crashed:', err);
 });

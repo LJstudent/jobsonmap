@@ -5,17 +5,17 @@ import {
   isSameRootDomain,
   normalizeStoredUrl,
   resolveAbsoluteUrl,
-} from "./domain.utils";
+} from './domain.utils';
 import {
   fetchHtmlPage,
   resolveReachableUrl,
   testLightweightUrl,
-} from "./http-client";
-import { logDiscovery } from "./discovery-logger";
-import { discoverFromSitemap } from "./sitemap-discovery.service";
+} from './http-client';
+import { logDiscovery } from './discovery-logger';
+import { discoverFromSitemap } from './sitemap-discovery.service';
 
-export type DiscoveryStatus = "found" | "not_found" | "error";
-export type DiscoveryMethod = "crawl" | "sitemap" | "path_guess";
+export type DiscoveryStatus = 'found' | 'not_found' | 'error';
+export type DiscoveryMethod = 'crawl' | 'sitemap' | 'path_guess';
 
 export type DiscoveryAttempt = {
   method: DiscoveryMethod;
@@ -35,13 +35,13 @@ export type JobPageDiscoveryResult = {
 
 export type Candidate = {
   url: string;
-  source: "subdomain" | "path" | "crawl" | "sitemap" | "html";
+  source: 'subdomain' | 'path' | 'crawl' | 'sitemap' | 'html';
 };
 
 type QueueItem = {
   url: string;
   depth: number;
-  signalStrength: "none" | "weak" | "strong";
+  signalStrength: 'none' | 'weak' | 'strong';
 };
 
 type ExtractedLink = {
@@ -76,64 +76,65 @@ type CandidateSelection = {
 };
 
 const STRONG_JOB_KEYWORDS = [
-  "vacatures",
-  "vacature",
-  "jobs",
-  "careers",
-  "join-us",
-  "join-our-team",
-  "open-positions",
-  "werken-bij",
-  "werkenbij",
-  "job",
-  "career",
-  "working-at",
-  "kom-werken",
+  'vacatures',
+  'vacature',
+  'jobs',
+  'careers',
+  'join-us',
+  'join-our-team',
+  'open-positions',
+  'werken-bij',
+  'werkenbij',
+  'job',
+  'career',
+  'working-at',
+  'kom-werken',
 ];
 
-const WEAK_JOB_KEYWORDS = [
-  "work",
-  "werken",
-  "positions",
-  "opportunities",
-];
+const WEAK_JOB_KEYWORDS = ['work', 'werken', 'positions', 'opportunities'];
 
 const FALSE_POSITIVE_PATTERNS = [
-  "blog",
-  "news",
-  "nieuws",
-  "privacy",
-  "terms",
-  "policy",
-  "voorwaarden",
-  "product",
-  "diensten",
-  "service",
+  'blog',
+  'news',
+  'nieuws',
+  'privacy',
+  'terms',
+  'policy',
+  'voorwaarden',
+  'product',
+  'diensten',
+  'service',
 ];
 
 const ATS_PATTERNS = [
-  { provider: "greenhouse", pattern: /(^|\.)greenhouse\.io$/i },
-  { provider: "lever", pattern: /(^|\.)lever\.co$/i },
-  { provider: "ashby", pattern: /(^|\.)ashbyhq\.com$/i },
-  { provider: "teamtailor", pattern: /(^|\.)teamtailor\.com$/i },
-  { provider: "recruitee", pattern: /(^|\.)recruitee\.com$/i },
-  { provider: "workable", pattern: /(^|\.)workable\.com$/i },
-  { provider: "homerun", pattern: /(^|\.)homerun\.co$/i },
+  { provider: 'greenhouse', pattern: /(^|\.)greenhouse\.io$/i },
+  { provider: 'lever', pattern: /(^|\.)lever\.co$/i },
+  { provider: 'ashby', pattern: /(^|\.)ashbyhq\.com$/i },
+  { provider: 'teamtailor', pattern: /(^|\.)teamtailor\.com$/i },
+  { provider: 'recruitee', pattern: /(^|\.)recruitee\.com$/i },
+  { provider: 'workable', pattern: /(^|\.)workable\.com$/i },
+  { provider: 'homerun', pattern: /(^|\.)homerun\.co$/i },
 ];
 
-const RECRUITMENT_HOST_KEYWORDS = ["werkenbij", "jobs", "careers"];
-const ABOUT_PAGE_PATTERNS = ["/about", "/over-ons", "/company"];
+const RECRUITMENT_HOST_KEYWORDS = ['werkenbij', 'jobs', 'careers'];
+const ABOUT_PAGE_PATTERNS = ['/about', '/over-ons', '/company'];
 const FALLBACK_PATHS = [
-  "/jobs",
-  "/careers",
-  "/vacatures",
-  "/werken-bij",
-  "/career",
-  "/join-us",
-  "/work-with-us",
-  "/open-positions",
+  '/jobs',
+  '/careers',
+  '/vacatures',
+  '/werken-bij',
+  '/career',
+  '/join-us',
+  '/work-with-us',
+  '/open-positions',
 ];
-const LISTING_SEGMENTS = ["/vacatures", "/jobs", "/careers", "/werken-bij", "/werkenbij"];
+const LISTING_SEGMENTS = [
+  '/vacatures',
+  '/jobs',
+  '/careers',
+  '/werken-bij',
+  '/werkenbij',
+];
 const MAX_CRAWL_DEPTH = 2;
 const MAX_LINKS_PER_PAGE = 25;
 
@@ -151,7 +152,7 @@ const SCORE_WEIGHTS = {
     sitemap: 5,
     html: 4,
     crawl: 2,
-  } satisfies Record<Candidate["source"], number>,
+  } satisfies Record<Candidate['source'], number>,
   minimumAcceptedScore: 5,
 } as const;
 
@@ -167,7 +168,10 @@ function hasFalsePositiveHint(value: string): boolean {
   return getKeywordMatches(value, FALSE_POSITIVE_PATTERNS).length > 0;
 }
 
-function getKeywordMatches(value: string, keywords: readonly string[]): string[] {
+function getKeywordMatches(
+  value: string,
+  keywords: readonly string[],
+): string[] {
   const normalized = value.toLowerCase();
   return keywords.filter((keyword) => normalized.includes(keyword));
 }
@@ -183,14 +187,17 @@ function detectAtsProvider(url: string): string | null {
 }
 
 function stripHtml(value: string): string {
-  return value.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  return value
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 export function extractTitle(html: string): string {
   const match = html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
 
   if (!match?.[1]) {
-    return "";
+    return '';
   }
 
   return stripHtml(match[1]);
@@ -203,26 +210,29 @@ export function isSoft404Title(title: string): boolean {
     return false;
   }
 
-  return [
-    "pagina niet gevonden",
-    "page not found",
-    "not found",
-  ].some((phrase) => normalizedTitle.includes(phrase)) || /\b404\b/.test(normalizedTitle);
+  return (
+    ['pagina niet gevonden', 'page not found', 'not found'].some((phrase) =>
+      normalizedTitle.includes(phrase),
+    ) || /\b404\b/.test(normalizedTitle)
+  );
 }
 
 function assertNotSoft404(html: string): void {
   const title = extractTitle(html);
 
   if (isSoft404Title(title)) {
-    throw new Error("Soft 404 detected via title");
+    throw new Error('Soft 404 detected via title');
   }
 }
 
 function getCompanyTokens(startUrl: string): string[] {
   const rootLabel = getRootDomainLabel(startUrl).toLowerCase();
-  const splitTokens = rootLabel.split(/[^a-z0-9]+/i).filter((token) => token.length >= 3);
-  const compactToken = rootLabel.replace(/[^a-z0-9]/gi, "");
-  const tokens = compactToken.length >= 3 ? [...splitTokens, compactToken] : splitTokens;
+  const splitTokens = rootLabel
+    .split(/[^a-z0-9]+/i)
+    .filter((token) => token.length >= 3);
+  const compactToken = rootLabel.replace(/[^a-z0-9]/gi, '');
+  const tokens =
+    compactToken.length >= 3 ? [...splitTokens, compactToken] : splitTokens;
 
   return [...new Set(tokens)];
 }
@@ -235,8 +245,12 @@ function isAboutPage(url: string): boolean {
 function isRecruitmentDomain(url: string, companyTokens: string[]): boolean {
   try {
     const hostname = getNormalizedHostname(url);
-    const hasRecruitmentKeyword = RECRUITMENT_HOST_KEYWORDS.some((keyword) => hostname.includes(keyword));
-    const hasCompanyToken = companyTokens.some((token) => hostname.includes(token));
+    const hasRecruitmentKeyword = RECRUITMENT_HOST_KEYWORDS.some((keyword) =>
+      hostname.includes(keyword),
+    );
+    const hasCompanyToken = companyTokens.some((token) =>
+      hostname.includes(token),
+    );
 
     return hasRecruitmentKeyword && hasCompanyToken;
   } catch {
@@ -247,17 +261,22 @@ function isRecruitmentDomain(url: string, companyTokens: string[]): boolean {
 function hasJobDetailPattern(url: string): boolean {
   try {
     const parsed = new URL(url);
-    const pathname = parsed.pathname.toLowerCase().replace(/\/+$/, "");
-    const segment = LISTING_SEGMENTS.find((item) => pathname.startsWith(`${item}/`) && pathname !== item);
+    const pathname = parsed.pathname.toLowerCase().replace(/\/+$/, '');
+    const segment = LISTING_SEGMENTS.find(
+      (item) => pathname.startsWith(`${item}/`) && pathname !== item,
+    );
 
     if (segment) {
       return true;
     }
 
-    const pathSegments = pathname.split("/").filter(Boolean);
-    const lastSegment = pathSegments.at(-1) ?? "";
-    const parentSegment = pathSegments.length > 1 ? `/${pathSegments[pathSegments.length - 2]}` : "";
-    const slugLike = lastSegment.split("-").length >= 3;
+    const pathSegments = pathname.split('/').filter(Boolean);
+    const lastSegment = pathSegments.at(-1) ?? '';
+    const parentSegment =
+      pathSegments.length > 1
+        ? `/${pathSegments[pathSegments.length - 2]}`
+        : '';
+    const slugLike = lastSegment.split('-').length >= 3;
 
     return slugLike && LISTING_SEGMENTS.includes(parentSegment);
   } catch {
@@ -268,15 +287,18 @@ function hasJobDetailPattern(url: string): boolean {
 function isLikelyJobOverviewPage(url: string): boolean {
   try {
     const parsed = new URL(url);
-    const pathname = parsed.pathname.toLowerCase().replace(/\/+$/, "");
-    const pathSegments = pathname.split("/").filter(Boolean);
-    const lastSegment = pathSegments.at(-1) ?? "";
+    const pathname = parsed.pathname.toLowerCase().replace(/\/+$/, '');
+    const pathSegments = pathname.split('/').filter(Boolean);
+    const lastSegment = pathSegments.at(-1) ?? '';
 
     if (!lastSegment || hasJobDetailPattern(url)) {
       return false;
     }
 
-    return STRONG_JOB_KEYWORDS.includes(lastSegment) || LISTING_SEGMENTS.includes(`/${lastSegment}`);
+    return (
+      STRONG_JOB_KEYWORDS.includes(lastSegment) ||
+      LISTING_SEGMENTS.includes(`/${lastSegment}`)
+    );
   } catch {
     return false;
   }
@@ -284,17 +306,27 @@ function isLikelyJobOverviewPage(url: string): boolean {
 
 function normalizeBusinessNameTokens(businessName: string): string[] {
   const lower = businessName.toLowerCase();
-  const splitTokens = lower.split(/[^a-z0-9]+/i).filter((token) => token.length >= 3);
-  const compact = lower.replace(/[^a-z0-9]/gi, "");
+  const splitTokens = lower
+    .split(/[^a-z0-9]+/i)
+    .filter((token) => token.length >= 3);
+  const compact = lower.replace(/[^a-z0-9]/gi, '');
 
-  return compact.length >= 3 ? [...new Set([...splitTokens, compact])] : [...new Set(splitTokens)];
+  return compact.length >= 3
+    ? [...new Set([...splitTokens, compact])]
+    : [...new Set(splitTokens)];
 }
 
-export function scoreCandidate(candidate: Candidate, businessName: string): number {
+export function scoreCandidate(
+  candidate: Candidate,
+  businessName: string,
+): number {
   const normalizedUrl = candidate.url.toLowerCase();
   const strongMatches = getKeywordMatches(normalizedUrl, STRONG_JOB_KEYWORDS);
   const weakMatches = getKeywordMatches(normalizedUrl, WEAK_JOB_KEYWORDS);
-  const falsePositiveMatches = getKeywordMatches(normalizedUrl, FALSE_POSITIVE_PATTERNS);
+  const falsePositiveMatches = getKeywordMatches(
+    normalizedUrl,
+    FALSE_POSITIVE_PATTERNS,
+  );
   const businessTokens = normalizeBusinessNameTokens(businessName);
 
   let score = 0;
@@ -302,7 +334,11 @@ export function scoreCandidate(candidate: Candidate, businessName: string): numb
   score += strongMatches.length * SCORE_WEIGHTS.strongKeyword;
   score += weakMatches.length * SCORE_WEIGHTS.weakKeyword;
 
-  if (strongMatches.length === 0 && weakMatches.length === 0 && falsePositiveMatches.length > 0) {
+  if (
+    strongMatches.length === 0 &&
+    weakMatches.length === 0 &&
+    falsePositiveMatches.length > 0
+  ) {
     score += SCORE_WEIGHTS.falsePositiveWithoutJobKeyword;
   }
 
@@ -327,32 +363,42 @@ export function scoreCandidate(candidate: Candidate, businessName: string): numb
   return score;
 }
 
-function explainCandidateScore(candidate: Candidate, businessName: string): string[] {
+function explainCandidateScore(
+  candidate: Candidate,
+  businessName: string,
+): string[] {
   const normalizedUrl = candidate.url.toLowerCase();
   const strongMatches = getKeywordMatches(normalizedUrl, STRONG_JOB_KEYWORDS);
   const weakMatches = getKeywordMatches(normalizedUrl, WEAK_JOB_KEYWORDS);
-  const falsePositiveMatches = getKeywordMatches(normalizedUrl, FALSE_POSITIVE_PATTERNS);
+  const falsePositiveMatches = getKeywordMatches(
+    normalizedUrl,
+    FALSE_POSITIVE_PATTERNS,
+  );
   const businessTokens = normalizeBusinessNameTokens(businessName);
   const reasons: string[] = [];
 
   if (strongMatches.length > 0) {
-    reasons.push(`strong=${strongMatches.join(",")}`);
+    reasons.push(`strong=${strongMatches.join(',')}`);
   }
 
   if (weakMatches.length > 0) {
-    reasons.push(`weak=${weakMatches.join(",")}`);
+    reasons.push(`weak=${weakMatches.join(',')}`);
   }
 
-  if (strongMatches.length === 0 && weakMatches.length === 0 && falsePositiveMatches.length > 0) {
-    reasons.push(`false-positive=${falsePositiveMatches.join(",")}`);
+  if (
+    strongMatches.length === 0 &&
+    weakMatches.length === 0 &&
+    falsePositiveMatches.length > 0
+  ) {
+    reasons.push(`false-positive=${falsePositiveMatches.join(',')}`);
   }
 
   if (isLikelyJobOverviewPage(candidate.url)) {
-    reasons.push("overview");
+    reasons.push('overview');
   }
 
   if (businessTokens.some((token) => normalizedUrl.includes(token))) {
-    reasons.push("business-name");
+    reasons.push('business-name');
   }
 
   const atsProvider = detectAtsProvider(candidate.url);
@@ -361,7 +407,7 @@ function explainCandidateScore(candidate: Candidate, businessName: string): stri
   }
 
   if (hasJobDetailPattern(candidate.url)) {
-    reasons.push("detail-page");
+    reasons.push('detail-page');
   }
 
   reasons.push(`source=${candidate.source}`);
@@ -371,16 +417,18 @@ function explainCandidateScore(candidate: Candidate, businessName: string): stri
 
 function getParentListingUrl(url: string): string | null {
   const parsed = new URL(url);
-  const pathname = parsed.pathname.toLowerCase().replace(/\/+$/, "");
-  const segment = LISTING_SEGMENTS.find((item) => pathname.startsWith(`${item}/`) && pathname !== item);
+  const pathname = parsed.pathname.toLowerCase().replace(/\/+$/, '');
+  const segment = LISTING_SEGMENTS.find(
+    (item) => pathname.startsWith(`${item}/`) && pathname !== item,
+  );
 
   if (!segment) {
     return null;
   }
 
   parsed.pathname = segment;
-  parsed.search = "";
-  parsed.hash = "";
+  parsed.search = '';
+  parsed.hash = '';
 
   return parsed.toString();
 }
@@ -406,14 +454,17 @@ async function finalizeCandidateUrl(
   candidateUrl: string,
   startUrl: string,
   companyTokens: string[],
-  options?: { checkSoft404Title?: boolean }
+  options?: { checkSoft404Title?: boolean },
 ): Promise<FinalizedCandidate | null> {
   if (isFileLikeUrl(candidateUrl)) {
     return null;
   }
 
   const atsProvider = detectAtsProvider(candidateUrl);
-  const recruitmentDomainSignal = isRecruitmentDomain(candidateUrl, companyTokens);
+  const recruitmentDomainSignal = isRecruitmentDomain(
+    candidateUrl,
+    companyTokens,
+  );
   const sameRoot = isSameRootDomain(candidateUrl, startUrl);
 
   if (!sameRoot && !atsProvider && !recruitmentDomainSignal) {
@@ -437,7 +488,9 @@ async function finalizeCandidateUrl(
     }
   }
 
-  const normalizedJobsUrl = atsProvider ? finalUrl : await normalizeDiscoveredUrl(finalUrl);
+  const normalizedJobsUrl = atsProvider
+    ? finalUrl
+    : await normalizeDiscoveredUrl(finalUrl);
 
   return {
     jobsUrl: normalizedJobsUrl,
@@ -445,7 +498,11 @@ async function finalizeCandidateUrl(
   };
 }
 
-function extractLinks(html: string, baseUrl: string, companyTokens: string[]): ExtractedLink[] {
+function extractLinks(
+  html: string,
+  baseUrl: string,
+  companyTokens: string[],
+): ExtractedLink[] {
   const links: ExtractedLink[] = [];
   const seen = new Set<string>();
   const anchorRegex = /<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>(.*?)<\/a>/gis;
@@ -453,8 +510,8 @@ function extractLinks(html: string, baseUrl: string, companyTokens: string[]): E
   let match: RegExpExecArray | null;
 
   while ((match = anchorRegex.exec(html)) !== null) {
-    const href = match[1] ?? "";
-    const text = stripHtml(match[2] ?? "");
+    const href = match[1] ?? '';
+    const text = stripHtml(match[2] ?? '');
     const absoluteUrl = resolveAbsoluteUrl(href, baseUrl);
 
     if (!absoluteUrl || isFileLikeUrl(absoluteUrl)) {
@@ -476,7 +533,10 @@ function extractLinks(html: string, baseUrl: string, companyTokens: string[]): E
       weakSignal: containsWeakKeyword(`${normalizedUrl} ${text}`),
       aboutSignal: isAboutPage(normalizedUrl),
       atsProvider: detectAtsProvider(normalizedUrl),
-      recruitmentDomainSignal: isRecruitmentDomain(normalizedUrl, companyTokens),
+      recruitmentDomainSignal: isRecruitmentDomain(
+        normalizedUrl,
+        companyTokens,
+      ),
     });
   }
 
@@ -485,27 +545,36 @@ function extractLinks(html: string, baseUrl: string, companyTokens: string[]): E
 
 function extractFooterHtml(html: string): string {
   const lower = html.toLowerCase();
-  const start = lower.indexOf("<footer");
+  const start = lower.indexOf('<footer');
 
   if (start === -1) {
-    return "";
+    return '';
   }
 
-  const end = lower.indexOf("</footer>", start);
+  const end = lower.indexOf('</footer>', start);
 
   if (end === -1) {
-    return "";
+    return '';
   }
 
-  return html.slice(start, end + "</footer>".length);
+  return html.slice(start, end + '</footer>'.length);
 }
 
-function prioritizeSameDomainLinks(links: ExtractedLink[], rootUrl: string): ExtractedLink[] {
+function prioritizeSameDomainLinks(
+  links: ExtractedLink[],
+  rootUrl: string,
+): ExtractedLink[] {
   return links
     .filter((link) => isSameRootDomain(link.url, rootUrl))
     .sort((left, right) => {
-      const leftScore = Number(left.strongSignal) * 4 + Number(left.aboutSignal) * 2 + Number(left.weakSignal);
-      const rightScore = Number(right.strongSignal) * 4 + Number(right.aboutSignal) * 2 + Number(right.weakSignal);
+      const leftScore =
+        Number(left.strongSignal) * 4 +
+        Number(left.aboutSignal) * 2 +
+        Number(left.weakSignal);
+      const rightScore =
+        Number(right.strongSignal) * 4 +
+        Number(right.aboutSignal) * 2 +
+        Number(right.weakSignal);
       return rightScore - leftScore;
     })
     .slice(0, MAX_LINKS_PER_PAGE);
@@ -515,17 +584,23 @@ function assessPageSignals(
   current: QueueItem,
   finalPageUrl: string,
   pageText: string,
-  links: ExtractedLink[]
+  links: ExtractedLink[],
 ): { isJobPage: boolean; hasAdditionalSignals: boolean } {
   const weakOnUrl = containsWeakKeyword(finalPageUrl);
   const weakOnPage = containsWeakKeyword(pageText);
   const strongLinkCount = links.filter((link) => link.strongSignal).length;
-  const jobPatternLinkCount = links.filter((link) => link.strongSignal || hasJobDetailPattern(link.url)).length;
-  const strongSignalsOnPage = containsStrongKeyword(pageText) || strongLinkCount > 0;
+  const jobPatternLinkCount = links.filter(
+    (link) => link.strongSignal || hasJobDetailPattern(link.url),
+  ).length;
+  const strongSignalsOnPage =
+    containsStrongKeyword(pageText) || strongLinkCount > 0;
   const hasAdditionalSignals = strongSignalsOnPage || jobPatternLinkCount >= 2;
-  const weakSignal = current.signalStrength === "weak" || weakOnUrl || weakOnPage;
-  const directStrongSignal = current.signalStrength === "strong" || containsStrongKeyword(finalPageUrl);
-  const falsePositive = hasFalsePositiveHint(finalPageUrl) && !directStrongSignal;
+  const weakSignal =
+    current.signalStrength === 'weak' || weakOnUrl || weakOnPage;
+  const directStrongSignal =
+    current.signalStrength === 'strong' || containsStrongKeyword(finalPageUrl);
+  const falsePositive =
+    hasFalsePositiveHint(finalPageUrl) && !directStrongSignal;
   const hasJobDetailLinks = links.some((link) => hasJobDetailPattern(link.url));
 
   if (!hasJobDetailLinks && current.depth === 0) {
@@ -536,12 +611,17 @@ function assessPageSignals(
   }
 
   return {
-    isJobPage: !falsePositive && (directStrongSignal || (weakSignal && hasAdditionalSignals)),
+    isJobPage:
+      !falsePositive &&
+      (directStrongSignal || (weakSignal && hasAdditionalSignals)),
     hasAdditionalSignals,
   };
 }
 
-function addCandidate(store: Map<string, Candidate>, candidate: Candidate): void {
+function addCandidate(
+  store: Map<string, Candidate>,
+  candidate: Candidate,
+): void {
   try {
     if (isFileLikeUrl(candidate.url)) {
       return;
@@ -564,24 +644,33 @@ function addCandidate(store: Map<string, Candidate>, candidate: Candidate): void
 function addCandidatesFromLinks(
   store: Map<string, Candidate>,
   links: ExtractedLink[],
-  source: Candidate["source"],
-  startUrl: string
+  source: Candidate['source'],
+  startUrl: string,
 ): void {
   for (const link of links) {
     const combined = `${link.url} ${link.text}`;
-    const isExternalRecruitment = !isSameRootDomain(link.url, startUrl) && (link.atsProvider || link.recruitmentDomainSignal);
-    const hasJobSignal = link.strongSignal || link.weakSignal || hasJobDetailPattern(link.url);
-    const hasUsefulAboutSignal = link.aboutSignal && (link.strongSignal || link.weakSignal);
+    const isExternalRecruitment =
+      !isSameRootDomain(link.url, startUrl) &&
+      (link.atsProvider || link.recruitmentDomainSignal);
+    const hasJobSignal =
+      link.strongSignal || link.weakSignal || hasJobDetailPattern(link.url);
+    const hasUsefulAboutSignal =
+      link.aboutSignal && (link.strongSignal || link.weakSignal);
 
     if (isExternalRecruitment || hasJobSignal || hasUsefulAboutSignal) {
       addCandidate(store, { url: link.url, source });
-    } else if (hasFalsePositiveHint(combined) && (link.atsProvider || link.recruitmentDomainSignal)) {
+    } else if (
+      hasFalsePositiveHint(combined) &&
+      (link.atsProvider || link.recruitmentDomainSignal)
+    ) {
       addCandidate(store, { url: link.url, source });
     }
   }
 }
 
-async function inspectFooterForJobPage(startUrl: string): Promise<CandidateCollectionResult> {
+async function inspectFooterForJobPage(
+  startUrl: string,
+): Promise<CandidateCollectionResult> {
   const startedAt = Date.now();
   const companyTokens = getCompanyTokens(startUrl);
   const candidates = new Map<string, Candidate>();
@@ -590,16 +679,18 @@ async function inspectFooterForJobPage(startUrl: string): Promise<CandidateColle
     const page = await fetchHtmlPage(startUrl);
     const finalPageUrl = normalizeStoredUrl(page.finalUrl);
     const footerHtml = extractFooterHtml(page.html);
-    const footerLinks = footerHtml ? extractLinks(footerHtml, finalPageUrl, companyTokens) : [];
+    const footerLinks = footerHtml
+      ? extractLinks(footerHtml, finalPageUrl, companyTokens)
+      : [];
     const allLinks = extractLinks(page.html, finalPageUrl, companyTokens);
 
-    addCandidatesFromLinks(candidates, footerLinks, "html", startUrl);
-    addCandidatesFromLinks(candidates, allLinks, "html", startUrl);
+    addCandidatesFromLinks(candidates, footerLinks, 'html', startUrl);
+    addCandidatesFromLinks(candidates, allLinks, 'html', startUrl);
 
     return {
       attempt: {
-        method: "crawl",
-        status: "not_found",
+        method: 'crawl',
+        status: 'not_found',
         foundUrl: null,
         durationMs: Date.now() - startedAt,
         message: `Collected ${candidates.size} HTML candidate(s)`,
@@ -609,18 +700,20 @@ async function inspectFooterForJobPage(startUrl: string): Promise<CandidateColle
   } catch {
     return {
       attempt: {
-        method: "crawl",
-        status: "error",
+        method: 'crawl',
+        status: 'error',
         foundUrl: null,
         durationMs: Date.now() - startedAt,
-        message: "Footer inspection failed",
+        message: 'Footer inspection failed',
       },
       candidates: [],
     };
   }
 }
 
-async function crawlForJobPage(startUrl: string): Promise<CandidateCollectionResult> {
+async function crawlForJobPage(
+  startUrl: string,
+): Promise<CandidateCollectionResult> {
   const startedAt = Date.now();
   const companyTokens = getCompanyTokens(startUrl);
   const queue: QueueItem[] = [
@@ -628,10 +721,10 @@ async function crawlForJobPage(startUrl: string): Promise<CandidateCollectionRes
       url: normalizeStoredUrl(startUrl),
       depth: 0,
       signalStrength: containsStrongKeyword(startUrl)
-        ? "strong"
+        ? 'strong'
         : containsWeakKeyword(startUrl)
-          ? "weak"
-          : "none",
+          ? 'weak'
+          : 'none',
     },
   ];
   const visited = new Set<string>();
@@ -648,7 +741,10 @@ async function crawlForJobPage(startUrl: string): Promise<CandidateCollectionRes
 
     const normalizedCurrentUrl = normalizeStoredUrl(current.url);
 
-    if (visited.has(normalizedCurrentUrl) || isFileLikeUrl(normalizedCurrentUrl)) {
+    if (
+      visited.has(normalizedCurrentUrl) ||
+      isFileLikeUrl(normalizedCurrentUrl)
+    ) {
       continue;
     }
 
@@ -659,14 +755,22 @@ async function crawlForJobPage(startUrl: string): Promise<CandidateCollectionRes
       const directAtsProvider = detectAtsProvider(normalizedCurrentUrl);
 
       if (directAtsProvider) {
-        addCandidate(candidates, { url: normalizedCurrentUrl, source: "crawl" });
+        addCandidate(candidates, {
+          url: normalizedCurrentUrl,
+          source: 'crawl',
+        });
       }
 
       const page = await fetchHtmlPage(normalizedCurrentUrl);
       const finalPageUrl = normalizeStoredUrl(page.finalUrl);
       const pageText = stripHtml(page.html);
       const links = extractLinks(page.html, finalPageUrl, companyTokens);
-      const pageAssessment = assessPageSignals(current, finalPageUrl, pageText, links);
+      const pageAssessment = assessPageSignals(
+        current,
+        finalPageUrl,
+        pageText,
+        links,
+      );
 
       visited.add(finalPageUrl);
 
@@ -677,10 +781,10 @@ async function crawlForJobPage(startUrl: string): Promise<CandidateCollectionRes
         containsWeakKeyword(finalPageUrl) ||
         hasJobDetailPattern(finalPageUrl)
       ) {
-        addCandidate(candidates, { url: finalPageUrl, source: "crawl" });
+        addCandidate(candidates, { url: finalPageUrl, source: 'crawl' });
       }
 
-      addCandidatesFromLinks(candidates, links, "crawl", startUrl);
+      addCandidatesFromLinks(candidates, links, 'crawl', startUrl);
 
       if (current.depth >= MAX_CRAWL_DEPTH) {
         continue;
@@ -696,7 +800,11 @@ async function crawlForJobPage(startUrl: string): Promise<CandidateCollectionRes
         queue.push({
           url: link.url,
           depth: current.depth + 1,
-          signalStrength: link.strongSignal ? "strong" : link.weakSignal ? "weak" : "none",
+          signalStrength: link.strongSignal
+            ? 'strong'
+            : link.weakSignal
+              ? 'weak'
+              : 'none',
         });
       }
     } catch {
@@ -706,65 +814,73 @@ async function crawlForJobPage(startUrl: string): Promise<CandidateCollectionRes
 
   return {
     attempt: {
-      method: "crawl",
-      status: visitedPages > 0 && fetchErrors < visitedPages ? "not_found" : "error",
+      method: 'crawl',
+      status:
+        visitedPages > 0 && fetchErrors < visitedPages ? 'not_found' : 'error',
       foundUrl: null,
       durationMs: Date.now() - startedAt,
       message:
         visitedPages === 0
-          ? "No pages were crawled"
+          ? 'No pages were crawled'
           : `Visited ${visitedPages} page(s), fetch errors: ${fetchErrors}, candidates: ${candidates.size}`,
     },
     candidates: [...candidates.values()],
   };
 }
 
-async function discoverFromSitemapCandidates(startUrl: string): Promise<CandidateCollectionResult> {
+async function discoverFromSitemapCandidates(
+  startUrl: string,
+): Promise<CandidateCollectionResult> {
   const startedAt = Date.now();
 
   try {
     const sitemapCandidates = await discoverFromSitemap(startUrl);
-    const candidates = sitemapCandidates.map((url) => ({ url, source: "sitemap" as const }));
+    const candidates = sitemapCandidates.map((url) => ({
+      url,
+      source: 'sitemap' as const,
+    }));
 
     return {
       attempt: {
-        method: "sitemap",
-        status: "not_found",
+        method: 'sitemap',
+        status: 'not_found',
         foundUrl: null,
         durationMs: Date.now() - startedAt,
         message:
           candidates.length > 0
             ? `Collected ${candidates.length} sitemap candidate(s)`
-            : "No job-related sitemap URLs found",
+            : 'No job-related sitemap URLs found',
       },
       candidates,
     };
   } catch {
     return {
       attempt: {
-        method: "sitemap",
-        status: "error",
+        method: 'sitemap',
+        status: 'error',
         foundUrl: null,
         durationMs: Date.now() - startedAt,
-        message: "Sitemap discovery failed",
+        message: 'Sitemap discovery failed',
       },
       candidates: [],
     };
   }
 }
 
-async function guessCommonPaths(startUrl: string): Promise<CandidateCollectionResult> {
+async function guessCommonPaths(
+  startUrl: string,
+): Promise<CandidateCollectionResult> {
   const startedAt = Date.now();
   const origin = new URL(startUrl).origin;
   const candidates = FALLBACK_PATHS.map((path) => ({
     url: new URL(path, origin).toString(),
-    source: "path" as const,
+    source: 'path' as const,
   }));
 
   return {
     attempt: {
-      method: "path_guess",
-      status: "not_found",
+      method: 'path_guess',
+      status: 'not_found',
       foundUrl: null,
       durationMs: Date.now() - startedAt,
       message: `Generated ${candidates.length} fallback path candidate(s)`,
@@ -773,11 +889,15 @@ async function guessCommonPaths(startUrl: string): Promise<CandidateCollectionRe
   };
 }
 
-async function guessDutchRecruitmentDomains(startUrl: string): Promise<CandidateCollectionResult> {
+async function guessDutchRecruitmentDomains(
+  startUrl: string,
+): Promise<CandidateCollectionResult> {
   const startedAt = Date.now();
   const companyLabel = getRootDomainLabel(startUrl).toLowerCase();
-  const compactLabel = companyLabel.replace(/[^a-z0-9]/gi, "");
-  const dashedLabel = companyLabel.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "");
+  const compactLabel = companyLabel.replace(/[^a-z0-9]/gi, '');
+  const dashedLabel = companyLabel
+    .replace(/[^a-z0-9]+/gi, '-')
+    .replace(/^-+|-+$/g, '');
   const candidateBases = [
     `https://werkenbij${compactLabel}.nl`,
     `https://werkenbij-${compactLabel}.nl`,
@@ -786,20 +906,26 @@ async function guessDutchRecruitmentDomains(startUrl: string): Promise<Candidate
   const candidates = new Map<string, Candidate>();
 
   for (const baseUrl of candidateBases) {
-    addCandidate(candidates, { url: baseUrl, source: "subdomain" });
+    addCandidate(candidates, { url: baseUrl, source: 'subdomain' });
 
-    for (const path of ["/vacatures", "/jobs", "/careers", "/werken-bij", "/werkenbij"]) {
+    for (const path of [
+      '/vacatures',
+      '/jobs',
+      '/careers',
+      '/werken-bij',
+      '/werkenbij',
+    ]) {
       addCandidate(candidates, {
         url: new URL(path, `${baseUrl}/`).toString(),
-        source: "subdomain",
+        source: 'subdomain',
       });
     }
   }
 
   return {
     attempt: {
-      method: "path_guess",
-      status: "not_found",
+      method: 'path_guess',
+      status: 'not_found',
       foundUrl: null,
       durationMs: Date.now() - startedAt,
       message: `Generated ${candidates.size} recruitment subdomain candidate(s)`,
@@ -809,22 +935,25 @@ async function guessDutchRecruitmentDomains(startUrl: string): Promise<Candidate
 }
 
 function shouldCheckSoft404(candidate: Candidate): boolean {
-  return candidate.source === "path" || candidate.source === "subdomain";
+  return candidate.source === 'path' || candidate.source === 'subdomain';
 }
 
-function mapSourceToMethod(source: Candidate["source"]): DiscoveryMethod {
-  if (source === "sitemap") {
-    return "sitemap";
+function mapSourceToMethod(source: Candidate['source']): DiscoveryMethod {
+  if (source === 'sitemap') {
+    return 'sitemap';
   }
 
-  if (source === "path" || source === "subdomain") {
-    return "path_guess";
+  if (source === 'path' || source === 'subdomain') {
+    return 'path_guess';
   }
 
-  return "crawl";
+  return 'crawl';
 }
 
-async function selectBestCandidate(startUrl: string, candidates: Candidate[]): Promise<CandidateSelection> {
+async function selectBestCandidate(
+  startUrl: string,
+  candidates: Candidate[],
+): Promise<CandidateSelection> {
   const companyTokens = getCompanyTokens(startUrl);
   const businessName = getRootDomainLabel(startUrl);
   const scoredCandidates = candidates
@@ -842,8 +971,8 @@ async function selectBestCandidate(startUrl: string, candidates: Candidate[]): P
     reasons: candidate.reasons,
   }));
 
-  console.log("Job discovery top candidates:", topCandidates);
-  logDiscovery("results", {
+  console.log('Job discovery top candidates:', topCandidates);
+  logDiscovery('results', {
     website: startUrl,
     candidateCount: scoredCandidates.length,
     topCandidates,
@@ -851,13 +980,16 @@ async function selectBestCandidate(startUrl: string, candidates: Candidate[]): P
 
   const bestCandidate = scoredCandidates[0] ?? null;
 
-  if (!bestCandidate || bestCandidate.score < SCORE_WEIGHTS.minimumAcceptedScore) {
-    logDiscovery("low-confidence", {
+  if (
+    !bestCandidate ||
+    bestCandidate.score < SCORE_WEIGHTS.minimumAcceptedScore
+  ) {
+    logDiscovery('low-confidence', {
       website: startUrl,
       minimumAcceptedScore: SCORE_WEIGHTS.minimumAcceptedScore,
       bestCandidate,
       topCandidates,
-      reason: !bestCandidate ? "no-candidates" : "score-below-threshold",
+      reason: !bestCandidate ? 'no-candidates' : 'score-below-threshold',
     });
 
     return {
@@ -886,7 +1018,7 @@ async function selectBestCandidate(startUrl: string, candidates: Candidate[]): P
       candidate.url,
       startUrl,
       companyTokens,
-      { checkSoft404Title: shouldCheckSoft404(candidate) }
+      { checkSoft404Title: shouldCheckSoft404(candidate) },
     );
 
     if (finalized) {
@@ -898,12 +1030,12 @@ async function selectBestCandidate(startUrl: string, candidates: Candidate[]): P
     }
   }
 
-  logDiscovery("low-confidence", {
+  logDiscovery('low-confidence', {
     website: startUrl,
     minimumAcceptedScore: SCORE_WEIGHTS.minimumAcceptedScore,
     bestCandidate,
     topCandidates,
-    reason: "candidate-finalization-failed",
+    reason: 'candidate-finalization-failed',
   });
 
   return {
@@ -915,9 +1047,9 @@ async function selectBestCandidate(startUrl: string, candidates: Candidate[]): P
 
 function updateAttemptWithSelection(
   attempt: DiscoveryAttempt,
-  sources: Candidate["source"][],
+  sources: Candidate['source'][],
   selected: ScoredCandidate | null,
-  finalized: FinalizedCandidate | null
+  finalized: FinalizedCandidate | null,
 ): DiscoveryAttempt {
   if (!selected || !finalized || !sources.includes(selected.source)) {
     return attempt;
@@ -925,24 +1057,28 @@ function updateAttemptWithSelection(
 
   return {
     ...attempt,
-    status: "found",
+    status: 'found',
     foundUrl: finalized.jobsUrl,
     message: `${attempt.message} | selected ${selected.source} candidate with score ${selected.score}`,
   };
 }
 
-export async function discoverByHeuristics(website: string): Promise<JobPageDiscoveryResult> {
+export async function discoverByHeuristics(
+  website: string,
+): Promise<JobPageDiscoveryResult> {
   const reachability = await resolveReachableUrl(website);
   const unreachableStatus =
-    reachability.statusCode && reachability.statusCode < 500 ? "not_found" : "error";
+    reachability.statusCode && reachability.statusCode < 500
+      ? 'not_found'
+      : 'error';
 
   if (!reachability.reachable || !reachability.finalUrl) {
-    if (unreachableStatus === "error") {
-      logDiscovery("errors", {
+    if (unreachableStatus === 'error') {
+      logDiscovery('errors', {
         website,
         statusCode: reachability.statusCode ?? null,
         message: reachability.message,
-        reason: "website-unreachable",
+        reason: 'website-unreachable',
       });
     }
 
@@ -953,7 +1089,7 @@ export async function discoverByHeuristics(website: string): Promise<JobPageDisc
       platform: null,
       attempts: [
         {
-          method: "crawl",
+          method: 'crawl',
           status: unreachableStatus,
           foundUrl: null,
           durationMs: 0,
@@ -965,9 +1101,13 @@ export async function discoverByHeuristics(website: string): Promise<JobPageDisc
 
   const crawlResult = await crawlForJobPage(reachability.finalUrl);
   const htmlResult = await inspectFooterForJobPage(reachability.finalUrl);
-  const sitemapResult = await discoverFromSitemapCandidates(reachability.finalUrl);
+  const sitemapResult = await discoverFromSitemapCandidates(
+    reachability.finalUrl,
+  );
   const fallbackResult = await guessCommonPaths(reachability.finalUrl);
-  const subdomainResult = await guessDutchRecruitmentDomains(reachability.finalUrl);
+  const subdomainResult = await guessDutchRecruitmentDomains(
+    reachability.finalUrl,
+  );
 
   const allCandidates = [
     ...crawlResult.candidates,
@@ -977,18 +1117,46 @@ export async function discoverByHeuristics(website: string): Promise<JobPageDisc
     ...subdomainResult.candidates,
   ];
 
-  const selection = await selectBestCandidate(reachability.finalUrl, allCandidates);
+  const selection = await selectBestCandidate(
+    reachability.finalUrl,
+    allCandidates,
+  );
   const attempts = [
-    updateAttemptWithSelection(crawlResult.attempt, ["crawl"], selection.selected, selection.finalized),
-    updateAttemptWithSelection(htmlResult.attempt, ["html"], selection.selected, selection.finalized),
-    updateAttemptWithSelection(sitemapResult.attempt, ["sitemap"], selection.selected, selection.finalized),
-    updateAttemptWithSelection(fallbackResult.attempt, ["path"], selection.selected, selection.finalized),
-    updateAttemptWithSelection(subdomainResult.attempt, ["subdomain"], selection.selected, selection.finalized),
+    updateAttemptWithSelection(
+      crawlResult.attempt,
+      ['crawl'],
+      selection.selected,
+      selection.finalized,
+    ),
+    updateAttemptWithSelection(
+      htmlResult.attempt,
+      ['html'],
+      selection.selected,
+      selection.finalized,
+    ),
+    updateAttemptWithSelection(
+      sitemapResult.attempt,
+      ['sitemap'],
+      selection.selected,
+      selection.finalized,
+    ),
+    updateAttemptWithSelection(
+      fallbackResult.attempt,
+      ['path'],
+      selection.selected,
+      selection.finalized,
+    ),
+    updateAttemptWithSelection(
+      subdomainResult.attempt,
+      ['subdomain'],
+      selection.selected,
+      selection.finalized,
+    ),
   ];
 
   if (selection.finalized && selection.selected) {
     return {
-      status: "found",
+      status: 'found',
       jobsUrl: selection.finalized.jobsUrl,
       method: mapSourceToMethod(selection.selected.source),
       platform: selection.finalized.platform,
@@ -996,16 +1164,23 @@ export async function discoverByHeuristics(website: string): Promise<JobPageDisc
     };
   }
 
-  if (allCandidates.length === 0 && attempts.every((attempt) => attempt.status === "error")) {
-    logDiscovery("errors", {
+  if (
+    allCandidates.length === 0 &&
+    attempts.every((attempt) => attempt.status === 'error')
+  ) {
+    logDiscovery('errors', {
       website: reachability.finalUrl,
       attempts,
-      reason: "all-discovery-methods-failed",
+      reason: 'all-discovery-methods-failed',
     });
   }
 
   return {
-    status: allCandidates.length === 0 && attempts.every((attempt) => attempt.status === "error") ? "error" : "not_found",
+    status:
+      allCandidates.length === 0 &&
+      attempts.every((attempt) => attempt.status === 'error')
+        ? 'error'
+        : 'not_found',
     jobsUrl: null,
     method: null,
     platform: null,

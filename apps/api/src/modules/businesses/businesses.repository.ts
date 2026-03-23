@@ -1,21 +1,28 @@
-import { and, desc, eq, sql, type SQL } from "drizzle-orm";
-import { db } from "../../db";
-import { businesses } from "../../schema/businesses";
-import { type BusinessRecord, type GetAllBusinessesQuery, type GetAllBusinessesResult } from "./businesses.types";
+import { and, desc, eq, sql, type SQL } from 'drizzle-orm';
+import { db } from '../../db';
+import { businesses } from '../../schema/businesses';
+import {
+  type BusinessRecord,
+  type GetAllBusinessesQuery,
+  type GetAllBusinessesResult,
+} from './businesses.types';
 
 export class BusinessesRepository {
   async getAll(query: GetAllBusinessesQuery): Promise<GetAllBusinessesResult> {
     const whereClauses: SQL[] = [];
 
     if (query.formattedAddress) {
-      whereClauses.push(eq(businesses.formattedAddress, query.formattedAddress));
+      whereClauses.push(
+        eq(businesses.formattedAddress, query.formattedAddress),
+      );
     }
 
-    if (typeof query.hasJobsPage === "boolean") {
+    if (typeof query.hasJobsPage === 'boolean') {
       whereClauses.push(eq(businesses.hasJobsPage, query.hasJobsPage));
     }
 
-    const whereExpression = whereClauses.length > 0 ? and(...whereClauses) : undefined;
+    const whereExpression =
+      whereClauses.length > 0 ? and(...whereClauses) : undefined;
 
     const businessRows: BusinessRecord[] = await db
       .select({

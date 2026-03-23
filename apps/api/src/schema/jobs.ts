@@ -1,28 +1,37 @@
-import { boolean, integer, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
-import { businesses } from "./businesses";
+import {
+  boolean,
+  integer,
+  pgTable,
+  serial,
+  text,
+  timestamp,
+} from 'drizzle-orm/pg-core';
+import { businesses } from './businesses';
 
-export const jobs = pgTable("jobs", {
-  id: serial("id").primaryKey(),
+export const jobs = pgTable('jobs', {
+  id: serial('id').primaryKey(),
 
-  businessId: integer("business_id").notNull().references(() => businesses.id),
+  businessId: integer('business_id')
+    .notNull()
+    .references(() => businesses.id),
 
-  title: text("title").notNull(),
+  title: text('title').notNull(),
 
-  locationText: text("location_text"),
+  locationText: text('location_text'),
 
-  city: text("city"),
+  city: text('city'),
 
-  description: text("description"),
+  description: text('description'),
 
-  url: text("url").notNull(),
+  url: text('url').notNull(),
 
-  externalId: text("external_id"),
+  externalId: text('external_id'),
 
-  sourcePlatform: text("source_platform"),
+  sourcePlatform: text('source_platform'),
 
-  firstSeenAt: timestamp("first_seen_at").defaultNow(),
+  firstSeenAt: timestamp('first_seen_at').defaultNow(),
 
-  lastSeenAt: timestamp("last_seen_at").defaultNow(),
+  lastSeenAt: timestamp('last_seen_at').defaultNow(),
 
-  isActive: boolean("is_active").default(true)
+  isActive: boolean('is_active').default(true),
 });

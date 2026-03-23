@@ -1,28 +1,25 @@
 // apps/api/src/services/google.service.ts
-import axios from "axios";
-import { polygonToCells, cellToLatLng } from "h3-js";
+import axios from 'axios';
+import { polygonToCells, cellToLatLng } from 'h3-js';
 
-const BASE_URL =
-  "https://maps.googleapis.com/maps/api/place/nearbysearch/json";
-const DETAILS_URL =
-  "https://maps.googleapis.com/maps/api/place/details/json";
+const BASE_URL = 'https://maps.googleapis.com/maps/api/place/nearbysearch/json';
+const DETAILS_URL = 'https://maps.googleapis.com/maps/api/place/details/json';
 
-const sleep = (ms: number) =>
-  new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const keywords = [
-  "software company",
-  "softwarebedrijf",
-  "IT consultancy",
-  "IT adviesbureau",
-  "SaaS company",
-  "ingenieursbureau",
-  "engineering company",
-  "installatiebedrijf",
-  "energiebedrijf",
-  "renewable energy",
-  "duurzame energie bedrijf",
-  "Energieopwekkingsapparatuur en -oplossingen",
+  'software company',
+  'softwarebedrijf',
+  'IT consultancy',
+  'IT adviesbureau',
+  'SaaS company',
+  'ingenieursbureau',
+  'engineering company',
+  'installatiebedrijf',
+  'energiebedrijf',
+  'renewable energy',
+  'duurzame energie bedrijf',
+  'Energieopwekkingsapparatuur en -oplossingen',
 ];
 
 /*
@@ -35,14 +32,14 @@ Houten
 */
 
 const areaPolygon = [
-  [52.1710, 5.0200], // NW - west of Maarssen
-  [52.1750, 5.2000], // N  - north of Bilthoven
-  [52.1350, 5.3000], // NE - east Zeist
-  [52.0400, 5.3300], // E  - east Driebergen
-  [51.9850, 5.2000], // SE - south Houten
-  [51.9800, 5.0200], // S  - south IJsselstein
-  [52.0400, 4.9300], // SW - west De Meern
-  [52.1200, 4.9500], // W  - west Maarssen
+  [52.171, 5.02], // NW - west of Maarssen
+  [52.175, 5.2], // N  - north of Bilthoven
+  [52.135, 5.3], // NE - east Zeist
+  [52.04, 5.33], // E  - east Driebergen
+  [51.985, 5.2], // SE - south Houten
+  [51.98, 5.02], // S  - south IJsselstein
+  [52.04, 4.93], // SW - west De Meern
+  [52.12, 4.95], // W  - west Maarssen
 ];
 
 export async function fetchUtrechtBusinesses(apiKey: string) {
@@ -61,7 +58,7 @@ export async function fetchUtrechtBusinesses(apiKey: string) {
     return { lat, lng };
   });
 
-  console.log("Total hex cells:", centers.length);
+  console.log('Total hex cells:', centers.length);
 
   for (const center of centers) {
     console.log(`\nSearching hex center: ${center.lat}, ${center.lng}`);
@@ -78,7 +75,7 @@ export async function fetchUtrechtBusinesses(apiKey: string) {
           location: `${center.lat},${center.lng}`,
           radius: 2000,
           keyword,
-          fields: "name,place_id,geometry",
+          fields: 'name,place_id,geometry',
           key: apiKey,
         };
 
@@ -95,15 +92,15 @@ export async function fetchUtrechtBusinesses(apiKey: string) {
         console.log(`Request ${totalRequests} -> ${results.length} results`);
 
         if (results.length > 0) {
-          console.log("Example company:", results[0].name);
+          console.log('Example company:', results[0].name);
         }
 
         totalResults += results.length;
 
         console.log(`Total collected so far: ${totalResults}`);
 
-        if (data.status !== "OK" && data.status !== "ZERO_RESULTS") {
-          console.error("Google API issue:", data.status);
+        if (data.status !== 'OK' && data.status !== 'ZERO_RESULTS') {
+          console.error('Google API issue:', data.status);
         }
 
         allResults.push(...results);
@@ -111,16 +108,16 @@ export async function fetchUtrechtBusinesses(apiKey: string) {
         nextPageToken = data.next_page_token;
 
         if (nextPageToken) {
-          console.log("Waiting for next page token...");
+          console.log('Waiting for next page token...');
           await sleep(2000);
         }
       } while (nextPageToken);
     }
   }
 
-  console.log("\n====== FETCH SUMMARY ======");
-  console.log("Total API requests:", totalRequests);
-  console.log("Total places collected:", totalResults);
+  console.log('\n====== FETCH SUMMARY ======');
+  console.log('Total API requests:', totalRequests);
+  console.log('Total places collected:', totalResults);
 
   return allResults;
 }
@@ -132,18 +129,18 @@ type GooglePlaceDetails = {
 
 export async function fetchPlaceDetails(
   apiKey: string,
-  placeId: string
+  placeId: string,
 ): Promise<GooglePlaceDetails> {
   const { data } = await axios.get(DETAILS_URL, {
     params: {
       place_id: placeId,
-      fields: "website,formatted_address",
+      fields: 'website,formatted_address',
       key: apiKey,
     },
   });
 
-  if (data.status !== "OK") {
-    if (data.status === "ZERO_RESULTS" || data.status === "NOT_FOUND") {
+  if (data.status !== 'OK') {
+    if (data.status === 'ZERO_RESULTS' || data.status === 'NOT_FOUND') {
       return {
         website: null,
         formattedAddress: null,
@@ -151,7 +148,7 @@ export async function fetchPlaceDetails(
     }
 
     throw new Error(
-      `Google Place Details failed for ${placeId}: ${data.status}`
+      `Google Place Details failed for ${placeId}: ${data.status}`,
     );
   }
 

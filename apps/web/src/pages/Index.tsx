@@ -3,7 +3,7 @@ import Header from '@/components/Header';
 import MapView from '@/components/MapView';
 import FloatingActions from '@/components/FloatingActions';
 import Footer from '@/components/Footer';
-import type { Map as LeafletMap } from "leaflet";
+import type { Map as LeafletMap } from 'leaflet';
 import { useBusinessesQuery } from '@/lib/businesses-api';
 
 const Index = () => {
@@ -22,7 +22,7 @@ const Index = () => {
     return businesses.filter(
       (business) =>
         business.name.toLowerCase().includes(query) ||
-        business.city.toLowerCase().includes(query)
+        business.city.toLowerCase().includes(query),
     );
   }, [data?.businesses, searchQuery]);
 

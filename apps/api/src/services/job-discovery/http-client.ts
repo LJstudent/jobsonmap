@@ -1,8 +1,8 @@
-import axios, { AxiosError } from "axios";
+import axios, { AxiosError } from 'axios';
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
 
-const USER_AGENT = "jobsonmap-discovery-bot/1.0 (+https://jobsonmap.local)";
+const USER_AGENT = 'jobsonmap-discovery-bot/1.0 (+https://jobsonmap.local)';
 const MAX_REDIRECTS = 5;
 const HEAD_UNSUPPORTED_STATUSES = new Set([403, 405, 501]);
 
@@ -11,14 +11,14 @@ export const discoveryHttpClient = axios.create({
   maxRedirects: 5,
   validateStatus: () => true,
   headers: {
-    "user-agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-      "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "accept":
-      "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "accept-language": "en-US,en;q=0.9,nl;q=0.8",
-    "accept-encoding": "gzip, deflate, br",
-    "connection": "keep-alive",
+    'user-agent':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+      '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    accept:
+      'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'accept-language': 'en-US,en;q=0.9,nl;q=0.8',
+    'accept-encoding': 'gzip, deflate, br',
+    connection: 'keep-alive',
   },
 });
 
@@ -42,14 +42,17 @@ type HtmlPageResult = {
   html: string;
 };
 
-function getFinalUrl(responseUrl: string | undefined, fallbackUrl: string): string {
+function getFinalUrl(
+  responseUrl: string | undefined,
+  fallbackUrl: string,
+): string {
   return responseUrl ?? fallbackUrl;
 }
 
 function toErrorMessage(error: unknown): string {
   if (error instanceof AxiosError) {
-    if (error.code === "ECONNABORTED") {
-      return "Request timed out";
+    if (error.code === 'ECONNABORTED') {
+      return 'Request timed out';
     }
 
     return error.message;
@@ -59,10 +62,12 @@ function toErrorMessage(error: unknown): string {
     return error.message;
   }
 
-  return "Unknown error";
+  return 'Unknown error';
 }
 
-async function performHeadRequest(url: string): Promise<LightweightCheckResult> {
+async function performHeadRequest(
+  url: string,
+): Promise<LightweightCheckResult> {
   const response = await discoveryHttpClient.head(url);
 
   return {
@@ -73,9 +78,11 @@ async function performHeadRequest(url: string): Promise<LightweightCheckResult> 
   };
 }
 
-async function performStreamingGet(url: string): Promise<LightweightCheckResult> {
+async function performStreamingGet(
+  url: string,
+): Promise<LightweightCheckResult> {
   const response = await discoveryHttpClient.get(url, {
-    responseType: "stream",
+    responseType: 'stream',
   });
 
   const stream = response.data as { destroy?: () => void } | undefined;
@@ -89,11 +96,16 @@ async function performStreamingGet(url: string): Promise<LightweightCheckResult>
   };
 }
 
-export async function testLightweightUrl(url: string): Promise<LightweightCheckResult> {
+export async function testLightweightUrl(
+  url: string,
+): Promise<LightweightCheckResult> {
   try {
     const headResult = await performHeadRequest(url);
 
-    if (headResult.ok || !HEAD_UNSUPPORTED_STATUSES.has(headResult.statusCode ?? 0)) {
+    if (
+      headResult.ok ||
+      !HEAD_UNSUPPORTED_STATUSES.has(headResult.statusCode ?? 0)
+    ) {
       return headResult;
     }
   } catch (error) {
@@ -117,7 +129,9 @@ export async function testLightweightUrl(url: string): Promise<LightweightCheckR
   }
 }
 
-export async function resolveReachableUrl(url: string): Promise<ReachabilityResult> {
+export async function resolveReachableUrl(
+  url: string,
+): Promise<ReachabilityResult> {
   const result = await testLightweightUrl(url);
 
   return {
@@ -130,10 +144,10 @@ export async function resolveReachableUrl(url: string): Promise<ReachabilityResu
 
 export async function fetchHtmlPage(url: string): Promise<HtmlPageResult> {
   const response = await discoveryHttpClient.get<string>(url, {
-    responseType: "text",
+    responseType: 'text',
   });
 
-  const html = typeof response.data === "string" ? response.data : "";
+  const html = typeof response.data === 'string' ? response.data : '';
 
   if (response.status < 200 || response.status >= 400) {
     throw new Error(`GET ${response.status}`);
