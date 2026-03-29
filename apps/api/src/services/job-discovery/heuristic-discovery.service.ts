@@ -12,7 +12,10 @@ import {
   testLightweightUrl,
 } from './http-client';
 import { logDiscovery } from './discovery-logger';
-import { discoverFromSitemap } from './sitemap-discovery.service';
+import {
+  discoverFromSitemap,
+  type SitemapClusterConfidence,
+} from './sitemap-discovery.service';
 
 export type DiscoveryStatus = 'found' | 'not_found' | 'error';
 export type DiscoveryMethod = 'crawl' | 'sitemap' | 'path_guess';
@@ -36,6 +39,23 @@ export type JobPageDiscoveryResult = {
 export type Candidate = {
   url: string;
   source: 'subdomain' | 'path' | 'crawl' | 'sitemap' | 'html';
+  clusterCount?: number;
+  clusterConfidence?: SitemapClusterConfidence;
+  clusterKeywordStrength?: number;
+  clusterPathDepth?: number;
+  clusterSameRootDomain?: boolean;
+  isSitemapClusterWinner?: boolean;
+};
+
+type CandidateSourceGroup =
+  | 'on_site_link_discovery'
+  | 'sitemap_discovery'
+  | 'synthetic_guess';
+
+type CandidateEvidence = {
+  sources: Set<Candidate['source']>;
+  groups: Set<CandidateSourceGroup>;
+  sightings: number;
 };
 
 type QueueItem = {
@@ -75,13 +95,15 @@ type CandidateSelection = {
   scoredCandidates: ScoredCandidate[];
 };
 
-const STRONG_JOB_KEYWORDS = [
+export const STRONG_JOB_KEYWORDS = [
   'vacatures',
   'vacature',
+  'vacancy',
   'jobs',
+  'job',
+  'career',
   'careers',
-
-  // ✅ FIXED
+  'carriere',
   'join us',
   'join our team',
   'open positions',
@@ -89,12 +111,14 @@ const STRONG_JOB_KEYWORDS = [
   'werkenbij',
   'working at',
   'kom werken',
-
-  'job',
-  'career',
 ];
 
-const WEAK_JOB_KEYWORDS = ['work', 'werken', 'positions', 'opportunities'];
+export const WEAK_JOB_KEYWORDS = [
+  'work',
+  'werken',
+  'positions',
+  'opportunities',
+];
 
 const FALSE_POSITIVE_PATTERNS = [
   // content pages
@@ -151,8 +175,54 @@ const ATS_PATTERNS = [
   { provider: 'homerun', pattern: /(^|\.)homerun\.co$/i },
 ];
 
-const RECRUITMENT_HOST_KEYWORDS = ['werkenbij', 'jobs', 'careers'];
+const RECRUITMENT_HOST_KEYWORDS = [
+  'werkenbij',
+  'vacatures',
+  'vacature',
+  'vacancy',
+  'jobs',
+  'job',
+  'careers',
+  'career',
+  'carriere',
+  'vacancies',
+];
 const ABOUT_PAGE_PATTERNS = ['/about', '/over-ons', '/company'];
+const PIVOT_PATHS = [
+  '/',
+  '/about',
+  '/about-us',
+  '/over-ons',
+  '/company',
+  '/team',
+];
+const OBVIOUS_NON_JOBS_FINAL_PATHS = [
+  '/404',
+  '/about',
+  '/about-us',
+  '/article',
+  '/articles',
+  '/blog',
+  '/company',
+  '/contact',
+  '/login',
+  '/over-ons',
+  '/partner',
+  '/partners',
+  '/team',
+  '/workflow',
+  '/workshops',
+];
+const DEEPER_EXPLORATION_PATHS = [
+  '/about',
+  '/careers',
+  '/carriere',
+  '/company',
+  '/join',
+  '/over-ons',
+  '/werken',
+  '/werken-bij',
+];
 const FALLBACK_PATHS = [
   '/jobs',
   '/careers',
@@ -163,6 +233,16 @@ const FALLBACK_PATHS = [
   '/work-with-us',
   '/open-positions',
 ];
+const RECRUITMENT_STYLE_LISTING_PATHS = [
+  '/vacatures',
+  '/vacature',
+  '/jobs',
+  '/job',
+  '/careers',
+  '/career',
+  '/carriere',
+  '/vacancies',
+];
 const LISTING_SEGMENTS = [
   '/vacatures',
   '/jobs',
@@ -170,27 +250,63 @@ const LISTING_SEGMENTS = [
   '/werken-bij',
   '/werkenbij',
 ];
+const LISTING_SEGMENT_TOKENS = new Set(
+  [
+    ...LISTING_SEGMENTS.map((segment) => segment.replace(/^\//, '')),
+    'vacature',
+    'vacancies',
+    'job',
+    'career',
+    'carriere',
+  ].map((segment) => segment.toLowerCase()),
+);
 const MAX_CRAWL_DEPTH = 2;
 const MAX_LINKS_PER_PAGE = 25;
 
 const SCORE_WEIGHTS = {
   strongKeyword: 10,
   weakKeyword: 3,
+  recruitmentStyleHostnameBonus: 8,
   falsePositivePenalty: -40,
   portfolioContextPenalty: -50,
-  overviewBonus: 5,
+  overviewBonus: 18,
+  listingPreferredBonus: 10,
+  genericEmployerBrandingPenalty: -16,
   businessNameBonus: 3,
   atsBonus: 5,
-  detailPenalty: -5,
+  detailPenalty: -18,
+  pivotPenalty: -8,
   sameDomainBonus: 10,
   externalDomainPenalty: -2,
+  sitemapClusterCountWeight: 8,
+  sitemapConfidence: {
+    LOW: 2,
+    MEDIUM: 6,
+    HIGH: 10,
+  } satisfies Record<SitemapClusterConfidence, number>,
+  sitemapClusterWinnerBonus: 8,
+  sitemapStructure: {
+    keywordStrengthWeight: 2,
+    shallowerPathBonus: 4,
+    sameRootDomainBonus: 3,
+  },
   source: {
     subdomain: 8,
     path: 6,
-    sitemap: 5,
+    sitemap: 12,
     html: 4,
     crawl: 2,
   } satisfies Record<Candidate['source'], number>,
+  consensus: {
+    rawSource: {
+      twoPlus: 1,
+      threePlus: 2,
+    },
+    sourceGroup: {
+      twoPlus: 2,
+      threePlus: 3,
+    },
+  },
   minimumAcceptedScore: 15,
 } as const;
 
@@ -206,7 +322,7 @@ function hasFalsePositiveHint(value: string): boolean {
   return getKeywordMatches(value, FALSE_POSITIVE_PATTERNS).length > 0;
 }
 
-function getKeywordMatches(
+export function getKeywordMatches(
   value: string,
   keywords: readonly string[],
 ): string[] {
@@ -214,8 +330,59 @@ function getKeywordMatches(
   return keywords.filter((keyword) => normalized.includes(keyword));
 }
 
-function normalizeUrlForMatching(url: string): string {
-  return url.toLowerCase().replace(/-/g, ' ').replace(/_/g, ' ');
+export function normalizeForMatch(value: string): string {
+  return value.toLowerCase().replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function hasStrongUrlSignal(url: string): boolean {
+  const normalized = normalizeForMatch(url);
+
+  return STRONG_JOB_KEYWORDS.some((keyword) =>
+    normalized.includes(normalizeForMatch(keyword)),
+  );
+}
+
+function hasStrongRecruitmentPrefix(value: string): boolean {
+  const normalized = value.toLowerCase().replace(/[^a-z0-9-]/g, '');
+
+  return (
+    normalized.startsWith('werkenbij') ||
+    normalized.startsWith('vacatures') ||
+    normalized.startsWith('vacature') ||
+    normalized.startsWith('jobs') ||
+    normalized.startsWith('job') ||
+    normalized.startsWith('careers') ||
+    normalized.startsWith('career') ||
+    normalized.startsWith('carriere') ||
+    normalized.startsWith('vacancies')
+  );
+}
+
+function getRecruitmentStyleHostnameMatch(
+  hostname: string,
+): { label: string; prefixMatched: boolean } | null {
+  const labels = hostname
+    .toLowerCase()
+    .split('.')
+    .flatMap((label) => label.split('-'))
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  for (const label of labels) {
+    if (STRONG_JOB_KEYWORDS.includes(label)) {
+      return { label, prefixMatched: false };
+    }
+
+    if (hasStrongRecruitmentPrefix(label)) {
+      return { label, prefixMatched: true };
+    }
+  }
+
+  return null;
+}
+
+function isRecruitmentStyleHostname(hostname: string): boolean {
+  return Boolean(getRecruitmentStyleHostnameMatch(hostname));
 }
 
 function detectAtsProvider(url: string): string | null {
@@ -233,6 +400,36 @@ function stripHtml(value: string): string {
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function extractMainContent(html: string): string {
+  const withoutHeader = html.replace(/<header[\s\S]*?<\/header>/gi, '');
+  const withoutFooter = withoutHeader.replace(
+    /<footer[\s\S]*?<\/footer>/gi,
+    '',
+  );
+
+  return withoutFooter;
+}
+
+function validateFinalPage(html: string): boolean {
+  const mainContent = extractMainContent(html);
+  const text = stripHtml(mainContent).toLowerCase();
+
+  const hasJobKeywords =
+    STRONG_JOB_KEYWORDS.some((keyword) => text.includes(keyword)) ||
+    text.includes('vacature') ||
+    text.includes('job');
+
+  const hasJobContext =
+    text.includes('solliciteer') ||
+    text.includes('apply') ||
+    text.includes('functie') ||
+    text.includes('rol') ||
+    text.includes('requirements') ||
+    text.includes('verantwoordelijkheden');
+
+  return hasJobKeywords && hasJobContext;
 }
 
 export function extractTitle(html: string): string {
@@ -284,6 +481,48 @@ function isAboutPage(url: string): boolean {
   return ABOUT_PAGE_PATTERNS.some((pattern) => normalized.includes(pattern));
 }
 
+function getNormalizedPathname(url: string): string | null {
+  try {
+    const pathname = new URL(url).pathname.toLowerCase().replace(/\/+$/, '');
+    return pathname || '/';
+  } catch {
+    return null;
+  }
+}
+
+function isPivotLikeCandidate(url: string, companyTokens?: string[]): boolean {
+  const pathname = getNormalizedPathname(url);
+
+  if (!pathname) {
+    return false;
+  }
+
+  if (PIVOT_PATHS.includes(pathname)) {
+    return true;
+  }
+
+  return (
+    pathname === '/' &&
+    Boolean(companyTokens?.length) &&
+    (isRecruitmentDomain(url, companyTokens ?? []) ||
+      isRecruitmentStyleUrl(url))
+  );
+}
+
+function isObviouslyNotJobsFinalPath(url: string): boolean {
+  const pathname = getNormalizedPathname(url);
+
+  if (!pathname) {
+    return false;
+  }
+
+  return OBVIOUS_NON_JOBS_FINAL_PATHS.includes(pathname);
+}
+
+function isRootUrl(url: string): boolean {
+  return getNormalizedPathname(url) === '/';
+}
+
 function isRecruitmentDomain(url: string, companyTokens: string[]): boolean {
   try {
     const hostname = getNormalizedHostname(url);
@@ -300,29 +539,87 @@ function isRecruitmentDomain(url: string, companyTokens: string[]): boolean {
   }
 }
 
-function hasJobDetailPattern(url: string): boolean {
+function isRecruitmentStyleUrl(url: string): boolean {
   try {
-    const parsed = new URL(url);
-    const pathname = parsed.pathname.toLowerCase().replace(/\/+$/, '');
-    const segment = LISTING_SEGMENTS.find(
-      (item) => pathname.startsWith(`${item}/`) && pathname !== item,
-    );
-
-    if (segment) {
-      return true;
-    }
-
-    const pathSegments = pathname.split('/').filter(Boolean);
-    const lastSegment = pathSegments.at(-1) ?? '';
-    const parentSegment =
-      pathSegments.length > 1
-        ? `/${pathSegments[pathSegments.length - 2]}`
-        : '';
-    const slugLike = lastSegment.split('-').length >= 3;
-
-    return slugLike && LISTING_SEGMENTS.includes(parentSegment);
+    return isRecruitmentStyleHostname(getNormalizedHostname(url));
   } catch {
     return false;
+  }
+}
+
+function getPathSegments(url: string): string[] {
+  try {
+    return new URL(url).pathname
+      .toLowerCase()
+      .replace(/\/+$/, '')
+      .split('/')
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function isListingSegment(segment: string): boolean {
+  return LISTING_SEGMENT_TOKENS.has(segment.toLowerCase());
+}
+
+type ListingAnchorMatch = {
+  startIndex: number;
+  endIndex: number;
+};
+
+function getDeepestListingAnchorMatch(url: string): ListingAnchorMatch | null {
+  const pathSegments = getPathSegments(url);
+  let deepestMatch: ListingAnchorMatch | null = null;
+
+  for (let index = 0; index < pathSegments.length; index += 1) {
+    if (!isListingSegment(pathSegments[index] ?? '')) {
+      continue;
+    }
+
+    let endIndex = index;
+
+    while (isListingSegment(pathSegments[endIndex + 1] ?? '')) {
+      endIndex += 1;
+    }
+
+    deepestMatch = { startIndex: index, endIndex };
+  }
+
+  return deepestMatch;
+}
+
+function getParentListingPathname(url: string): string | null {
+  const pathSegments = getPathSegments(url);
+  const anchorMatch = getDeepestListingAnchorMatch(url);
+
+  if (!anchorMatch || anchorMatch.endIndex >= pathSegments.length - 1) {
+    return null;
+  }
+
+  return `/${pathSegments.slice(0, anchorMatch.endIndex + 1).join('/')}`;
+}
+
+function hasJobDetailPattern(url: string): boolean {
+  return getParentListingPathname(url) !== null;
+}
+
+function getParentListingUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    const parentPathname = getParentListingPathname(url);
+
+    if (!parentPathname) {
+      return null;
+    }
+
+    parsed.pathname = parentPathname;
+    parsed.search = '';
+    parsed.hash = '';
+
+    return normalizeStoredUrl(parsed.toString());
+  } catch {
+    return null;
   }
 }
 
@@ -332,6 +629,7 @@ function isLikelyJobOverviewPage(url: string): boolean {
     const pathname = parsed.pathname.toLowerCase().replace(/\/+$/, '');
     const pathSegments = pathname.split('/').filter(Boolean);
     const lastSegment = pathSegments.at(-1) ?? '';
+    const normalizedLastSegment = normalizeForMatch(lastSegment);
 
     if (!lastSegment || hasJobDetailPattern(url)) {
       return false;
@@ -339,7 +637,56 @@ function isLikelyJobOverviewPage(url: string): boolean {
 
     return (
       STRONG_JOB_KEYWORDS.includes(lastSegment) ||
-      LISTING_SEGMENTS.includes(`/${lastSegment}`)
+      LISTING_SEGMENTS.includes(`/${lastSegment}`) ||
+      isListingSegment(lastSegment) ||
+      STRONG_JOB_KEYWORDS.some((keyword) => {
+        const normalizedKeyword = normalizeForMatch(keyword);
+        return (
+          normalizedLastSegment.startsWith(`${normalizedKeyword} `) ||
+          normalizedLastSegment.endsWith(` ${normalizedKeyword}`)
+        );
+      })
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isGenericEmployerBrandingPage(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const pathname = parsed.pathname.toLowerCase().replace(/\/+$/, '');
+    const pathSegments = pathname.split('/').filter(Boolean);
+    const lastSegment = pathSegments.at(-1) ?? '';
+    const normalizedLastSegment = normalizeForMatch(lastSegment);
+    const normalizedPath = normalizeForMatch(pathname);
+
+    if (
+      !lastSegment ||
+      isLikelyJobOverviewPage(url) ||
+      hasJobDetailPattern(url)
+    ) {
+      return false;
+    }
+
+    const hasEmployerBrandingPhrase =
+      normalizedPath.includes('werken bij') ||
+      normalizedPath.includes('working at') ||
+      normalizedPath.includes('join us') ||
+      normalizedPath.includes('join our team') ||
+      normalizedPath.includes('work with us');
+
+    if (!hasEmployerBrandingPhrase) {
+      return false;
+    }
+
+    return (
+      !isListingSegment(lastSegment) &&
+      !STRONG_JOB_KEYWORDS.includes(lastSegment) &&
+      !LISTING_SEGMENTS.includes(`/${lastSegment}`) &&
+      !normalizedLastSegment.startsWith('vacatures') &&
+      !normalizedLastSegment.startsWith('jobs') &&
+      !normalizedLastSegment.startsWith('careers')
     );
   } catch {
     return false;
@@ -358,12 +705,55 @@ function normalizeBusinessNameTokens(businessName: string): string[] {
     : [...new Set(splitTokens)];
 }
 
+function getCandidateSourceGroup(
+  source: Candidate['source'],
+): CandidateSourceGroup {
+  switch (source) {
+    case 'crawl':
+    case 'html':
+      return 'on_site_link_discovery';
+    case 'sitemap':
+      return 'sitemap_discovery';
+    case 'path':
+    case 'subdomain':
+      return 'synthetic_guess';
+  }
+}
+
+function buildCandidateEvidenceMap(
+  candidates: Candidate[],
+): Map<string, CandidateEvidence> {
+  const evidenceByUrl = new Map<string, CandidateEvidence>();
+
+  for (const candidate of candidates) {
+    const normalizedUrl = normalizeStoredUrl(candidate.url);
+    const existing = evidenceByUrl.get(normalizedUrl);
+
+    if (existing) {
+      existing.sources.add(candidate.source);
+      existing.groups.add(getCandidateSourceGroup(candidate.source));
+      existing.sightings += 1;
+      continue;
+    }
+
+    evidenceByUrl.set(normalizedUrl, {
+      sources: new Set([candidate.source]),
+      groups: new Set([getCandidateSourceGroup(candidate.source)]),
+      sightings: 1,
+    });
+  }
+
+  return evidenceByUrl;
+}
+
 function getCandidateScoreBreakdown(
   candidate: Candidate,
   businessName: string,
   startUrl: string,
+  evidence?: CandidateEvidence,
 ): { score: number; reasons: string[] } {
-  const normalizedUrl = normalizeUrlForMatching(candidate.url);
+  const normalizedUrl = normalizeForMatch(candidate.url);
+  const recruitmentStyleHostname = isRecruitmentStyleUrl(candidate.url);
   const strongMatches = getKeywordMatches(normalizedUrl, STRONG_JOB_KEYWORDS);
   const weakMatches = getKeywordMatches(normalizedUrl, WEAK_JOB_KEYWORDS);
   const falsePositiveMatches = getKeywordMatches(
@@ -377,6 +767,11 @@ function getCandidateScoreBreakdown(
   if (strongMatches.length > 0) {
     score += strongMatches.length * SCORE_WEIGHTS.strongKeyword;
     reasons.push(`strong=${strongMatches.join(',')}`);
+  }
+
+  if (recruitmentStyleHostname) {
+    score += SCORE_WEIGHTS.recruitmentStyleHostnameBonus;
+    reasons.push('recruitment-style-host');
   }
 
   if (weakMatches.length > 0) {
@@ -402,6 +797,13 @@ function getCandidateScoreBreakdown(
   if (isLikelyJobOverviewPage(candidate.url)) {
     score += SCORE_WEIGHTS.overviewBonus;
     reasons.push('overview');
+    reasons.push('listing-preferred');
+    score += SCORE_WEIGHTS.listingPreferredBonus;
+  }
+
+  if (isGenericEmployerBrandingPage(candidate.url)) {
+    score += SCORE_WEIGHTS.genericEmployerBrandingPenalty;
+    reasons.push('negative=generic-employer-branding');
   }
 
   if (businessTokens.some((token) => normalizedUrl.includes(token))) {
@@ -409,9 +811,9 @@ function getCandidateScoreBreakdown(
     reasons.push('business-name');
   }
 
-  if (businessTokens.some((token) => normalizedUrl.includes(token))) {
-    score += SCORE_WEIGHTS.businessNameBonus;
-    reasons.push('business-name');
+  if (isPivotLikeCandidate(candidate.url)) {
+    score += SCORE_WEIGHTS.pivotPenalty;
+    reasons.push('pivot');
   }
 
   if (isSameRootDomain(candidate.url, startUrl)) {
@@ -436,6 +838,71 @@ function getCandidateScoreBreakdown(
   score += SCORE_WEIGHTS.source[candidate.source];
   reasons.push(`source=${candidate.source}`);
 
+  if (candidate.source === 'sitemap' && candidate.isSitemapClusterWinner) {
+    score += SCORE_WEIGHTS.sitemapClusterWinnerBonus;
+    reasons.push('sitemap-cluster-winner');
+  }
+
+  if (candidate.source === 'sitemap' && candidate.clusterCount) {
+    score += candidate.clusterCount * SCORE_WEIGHTS.sitemapClusterCountWeight;
+    reasons.push(`sitemap-cluster-count=${candidate.clusterCount}`);
+  }
+
+  if (candidate.source === 'sitemap' && candidate.clusterConfidence) {
+    score += SCORE_WEIGHTS.sitemapConfidence[candidate.clusterConfidence];
+    reasons.push(`sitemap-confidence=${candidate.clusterConfidence}`);
+  }
+
+  if (candidate.source === 'sitemap') {
+    if (typeof candidate.clusterKeywordStrength === 'number') {
+      score +=
+        candidate.clusterKeywordStrength *
+        SCORE_WEIGHTS.sitemapStructure.keywordStrengthWeight;
+      reasons.push(
+        `sitemap-keyword-strength=${candidate.clusterKeywordStrength}`,
+      );
+    }
+
+    if (typeof candidate.clusterPathDepth === 'number') {
+      const shallowerPathBonus = Math.max(
+        0,
+        SCORE_WEIGHTS.sitemapStructure.shallowerPathBonus -
+          Math.max(candidate.clusterPathDepth - 1, 0),
+      );
+
+      score += shallowerPathBonus;
+      reasons.push(`sitemap-path-depth=${candidate.clusterPathDepth}`);
+    }
+
+    if (candidate.clusterSameRootDomain) {
+      score += SCORE_WEIGHTS.sitemapStructure.sameRootDomainBonus;
+      reasons.push('sitemap-same-root-domain');
+    }
+  }
+
+  if (evidence) {
+    const sourceCount = evidence.sources.size;
+    const groupCount = evidence.groups.size;
+    const groupList = [...evidence.groups].sort();
+
+    if (groupCount > 1) {
+      score +=
+        groupCount >= 3
+          ? SCORE_WEIGHTS.consensus.sourceGroup.threePlus
+          : SCORE_WEIGHTS.consensus.sourceGroup.twoPlus;
+      reasons.push('multi-group');
+      reasons.push(`groups=${groupList.join(',')}`);
+    }
+
+    if (groupCount > 1 && sourceCount > 1) {
+      score +=
+        sourceCount >= 3
+          ? SCORE_WEIGHTS.consensus.rawSource.threePlus
+          : SCORE_WEIGHTS.consensus.rawSource.twoPlus;
+      reasons.push('multi-source');
+    }
+  }
+
   return { score, reasons };
 }
 
@@ -443,8 +910,10 @@ export function scoreCandidate(
   candidate: Candidate,
   businessName: string,
   startUrl: string,
+  evidence?: CandidateEvidence,
 ): number {
-  return getCandidateScoreBreakdown(candidate, businessName, startUrl).score;
+  return getCandidateScoreBreakdown(candidate, businessName, startUrl, evidence)
+    .score;
 }
 
 function hasJobIntent(candidate: Pick<ScoredCandidate, 'reasons'>): boolean {
@@ -465,39 +934,52 @@ function getCandidateDedupeKey(url: string): string | null {
   }
 }
 
-function getParentListingUrl(url: string): string | null {
-  const parsed = new URL(url);
-  const pathname = parsed.pathname.toLowerCase().replace(/\/+$/, '');
-  const segment = LISTING_SEGMENTS.find(
-    (item) => pathname.startsWith(`${item}/`) && pathname !== item,
-  );
+function expandCandidateFinalizationTargets(candidateUrl: string): string[] {
+  const normalizedCandidateUrl = normalizeStoredUrl(candidateUrl);
+  const parentListingUrl = hasJobDetailPattern(normalizedCandidateUrl)
+    ? getParentListingUrl(normalizedCandidateUrl)
+    : null;
 
-  if (!segment) {
-    return null;
-  }
-
-  parsed.pathname = segment;
-  parsed.search = '';
-  parsed.hash = '';
-
-  return parsed.toString();
+  return [
+    ...new Set(
+      [parentListingUrl, normalizedCandidateUrl].filter(
+        (value): value is string => Boolean(value),
+      ),
+    ),
+  ];
 }
 
-async function normalizeDiscoveredUrl(url: string): Promise<string> {
-  const normalizedUrl = normalizeStoredUrl(url);
-  const parentListingUrl = getParentListingUrl(normalizedUrl);
+function getRecruitmentStyleListingTargets(url: string): string[] {
+  try {
+    const parsed = new URL(url);
 
-  if (!parentListingUrl) {
-    return normalizedUrl;
+    return RECRUITMENT_STYLE_LISTING_PATHS.map((pathname) => {
+      const candidate = new URL(parsed.origin);
+      candidate.pathname = pathname;
+      candidate.search = '';
+      candidate.hash = '';
+      return candidate.toString();
+    });
+  } catch {
+    return [];
+  }
+}
+
+function shouldAllowDeeperExploration(
+  url: string,
+  companyTokens: string[],
+): boolean {
+  const pathname = getNormalizedPathname(url);
+
+  if (!pathname) {
+    return false;
   }
 
-  const parentResult = await testLightweightUrl(parentListingUrl);
-
-  if (!parentResult.ok) {
-    return normalizedUrl;
-  }
-
-  return normalizeStoredUrl(parentResult.finalUrl);
+  return (
+    DEEPER_EXPLORATION_PATHS.includes(pathname) ||
+    hasStrongUrlSignal(url) ||
+    isPivotLikeCandidate(url, companyTokens)
+  );
 }
 
 async function finalizeCandidateUrl(
@@ -528,24 +1010,197 @@ async function finalizeCandidateUrl(
   }
 
   const finalUrl = normalizeStoredUrl(probe.finalUrl);
+  const finalRecruitmentStyleHostname = isRecruitmentStyleUrl(finalUrl);
+  const recruitmentStyleMatch = finalRecruitmentStyleHostname
+    ? getRecruitmentStyleHostnameMatch(getNormalizedHostname(finalUrl))
+    : null;
 
-  if (options?.checkSoft404Title && !atsProvider) {
-    try {
-      const page = await fetchHtmlPage(finalUrl);
-      assertNotSoft404(page.html);
-    } catch {
-      return null;
+  const candidatePathname = getNormalizedPathname(candidateUrl);
+  const finalPathname = getNormalizedPathname(finalUrl);
+
+  const redirectedToRootPivot =
+    candidatePathname !== null &&
+    finalPathname !== null &&
+    candidatePathname !== '/' &&
+    finalPathname === '/' &&
+    candidateUrl !== finalUrl &&
+    !finalRecruitmentStyleHostname;
+
+  if (redirectedToRootPivot) {
+    logDiscovery('finalize-reject', {
+      website: startUrl,
+      candidateUrl,
+      finalUrl,
+      reason: 'redirected-to-root-pivot',
+    });
+
+    return null;
+  }
+
+  if (recruitmentStyleMatch?.prefixMatched) {
+    logDiscovery('recruitment-style-host', {
+      website: startUrl,
+      candidateUrl,
+      finalUrl,
+      hostname: getNormalizedHostname(finalUrl),
+      label: recruitmentStyleMatch.label,
+      reason: 'prefix-match',
+    });
+  }
+
+  if (finalRecruitmentStyleHostname && finalPathname === '/' && !atsProvider) {
+    logDiscovery('decision', {
+      website: startUrl,
+      candidateUrl,
+      selectedUrl: finalUrl,
+      reason: 'root-recruitment-domain-pivot',
+    });
+
+    const deeperRecruitmentPaths = [
+      '/vacatures',
+      '/vacature',
+      '/jobs',
+      '/job',
+      '/careers',
+      '/career',
+      '/carriere',
+      '/vacancies',
+    ];
+
+    for (const path of deeperRecruitmentPaths) {
+      const resolved = resolveAbsoluteUrl(path, finalUrl);
+
+      if (!resolved) {
+        continue;
+      }
+
+      const reachable = await testLightweightUrl(resolved);
+
+      if (!reachable.ok) {
+        continue;
+      }
+
+      const reachableFinalUrl = normalizeStoredUrl(reachable.finalUrl);
+
+      if (reachableFinalUrl === finalUrl) {
+        continue;
+      }
+
+      logDiscovery('decision', {
+        website: startUrl,
+        candidateUrl,
+        selectedUrl: reachableFinalUrl,
+        reason: 'preferred-deeper-recruitment-path',
+      });
+
+      return {
+        jobsUrl: reachableFinalUrl,
+        platform: detectAtsProvider(reachableFinalUrl),
+      };
     }
   }
 
-  const normalizedJobsUrl = atsProvider
-    ? finalUrl
-    : await normalizeDiscoveredUrl(finalUrl);
+  if (
+    hasStrongUrlSignal(finalUrl) &&
+    probe.finalUrl === candidateUrl &&
+    !isPivotLikeCandidate(finalUrl, companyTokens)
+  ) {
+    return {
+      jobsUrl: finalUrl,
+      platform: atsProvider ?? detectAtsProvider(finalUrl),
+    };
+  }
+
+  try {
+    const page = await fetchHtmlPage(finalUrl);
+
+    if (options?.checkSoft404Title && !atsProvider) {
+      assertNotSoft404(page.html);
+    }
+
+    const isListing = isLikelyJobOverviewPage(finalUrl);
+
+    if (!isListing) {
+      const isValid = validateFinalPage(page.html);
+
+      if (!isValid) {
+        return null;
+      }
+    }
+  } catch {
+    return null;
+  }
 
   return {
-    jobsUrl: normalizedJobsUrl,
-    platform: atsProvider ?? detectAtsProvider(normalizedJobsUrl),
+    jobsUrl: finalUrl,
+    platform: atsProvider ?? detectAtsProvider(finalUrl),
   };
+}
+
+async function normalizeSelectedDetailPageToParentListing(
+  selected: ScoredCandidate,
+  finalized: FinalizedCandidate,
+  startUrl: string,
+  companyTokens: string[],
+): Promise<FinalizedCandidate> {
+  if (!hasJobDetailPattern(finalized.jobsUrl)) {
+    return finalized;
+  }
+
+  logDiscovery('decision', {
+    website: startUrl,
+    candidateUrl: selected.url,
+    selectedUrl: finalized.jobsUrl,
+    score: selected.score,
+    reason: 'detail-page-detected',
+  });
+
+  const parentListingUrl = getParentListingUrl(finalized.jobsUrl);
+
+  if (!parentListingUrl || parentListingUrl === finalized.jobsUrl) {
+    return finalized;
+  }
+
+  logDiscovery('decision', {
+    website: startUrl,
+    candidateUrl: selected.url,
+    selectedUrl: finalized.jobsUrl,
+    parentListingUrl,
+    score: selected.score,
+    reason: 'parent-listing-derived',
+  });
+
+  const promoted = await finalizeCandidateUrl(
+    parentListingUrl,
+    startUrl,
+    companyTokens,
+    { checkSoft404Title: shouldCheckSoft404(selected) },
+  );
+
+  if (!promoted) {
+    logDiscovery('decision', {
+      website: startUrl,
+      candidateUrl: selected.url,
+      selectedUrl: finalized.jobsUrl,
+      parentListingUrl,
+      score: selected.score,
+      reason: 'parent-listing-invalid-kept-detail',
+    });
+
+    return finalized;
+  }
+
+  logDiscovery('decision', {
+    website: startUrl,
+    candidateUrl: selected.url,
+    finalizedTargetUrl: finalized.jobsUrl,
+    parentListingUrl,
+    selectedUrl: promoted.jobsUrl,
+    score: selected.score,
+    reason: 'selected-after-parent-promotion',
+  });
+
+  return promoted;
 }
 
 function extractLinks(
@@ -613,7 +1268,16 @@ function extractFooterHtml(html: string): string {
 function prioritizeSameDomainLinks(
   links: ExtractedLink[],
   rootUrl: string,
+  currentUrl: string,
+  companyTokens: string[],
 ): ExtractedLink[] {
+  const extraExplorationBudget = shouldAllowDeeperExploration(
+    currentUrl,
+    companyTokens,
+  )
+    ? 10
+    : 0;
+
   return links
     .filter((link) => isSameRootDomain(link.url, rootUrl))
     .sort((left, right) => {
@@ -627,7 +1291,7 @@ function prioritizeSameDomainLinks(
         Number(right.weakSignal);
       return rightScore - leftScore;
     })
-    .slice(0, MAX_LINKS_PER_PAGE);
+    .slice(0, MAX_LINKS_PER_PAGE + extraExplorationBudget);
 }
 
 function assessPageSignals(
@@ -836,11 +1500,32 @@ async function crawlForJobPage(
 
       addCandidatesFromLinks(candidates, links, 'crawl', startUrl);
 
-      if (current.depth >= MAX_CRAWL_DEPTH) {
+      const allowExtraDepth = shouldAllowDeeperExploration(
+        finalPageUrl,
+        companyTokens,
+      );
+      const depthLimit = MAX_CRAWL_DEPTH + Number(allowExtraDepth);
+
+      if (allowExtraDepth && current.depth >= MAX_CRAWL_DEPTH) {
+        logDiscovery('crawl-deeper', {
+          website: startUrl,
+          url: finalPageUrl,
+          depth: current.depth,
+          depthLimit,
+          reason: 'career-or-pivot-signal',
+        });
+      }
+
+      if (current.depth >= depthLimit) {
         continue;
       }
 
-      const nextLinks = prioritizeSameDomainLinks(links, startUrl);
+      const nextLinks = prioritizeSameDomainLinks(
+        links,
+        startUrl,
+        finalPageUrl,
+        companyTokens,
+      );
 
       for (const link of nextLinks) {
         if (visited.has(link.url)) {
@@ -884,11 +1569,21 @@ async function discoverFromSitemapCandidates(
   const startedAt = Date.now();
 
   try {
-    const sitemapCandidates = await discoverFromSitemap(startUrl);
-    const candidates = sitemapCandidates.map((url) => ({
-      url,
-      source: 'sitemap' as const,
-    }));
+    const sitemapDiscovery = await discoverFromSitemap(startUrl);
+    const candidates = sitemapDiscovery.bestParent
+      ? [
+          {
+            url: sitemapDiscovery.bestParent,
+            source: 'sitemap' as const,
+            clusterCount: sitemapDiscovery.cluster?.count,
+            clusterConfidence: sitemapDiscovery.cluster?.confidence,
+            clusterKeywordStrength: sitemapDiscovery.cluster?.keywordStrength,
+            clusterPathDepth: sitemapDiscovery.cluster?.pathDepth,
+            clusterSameRootDomain: sitemapDiscovery.cluster?.sameRootDomain,
+            isSitemapClusterWinner: true,
+          },
+        ]
+      : [];
 
     return {
       attempt: {
@@ -922,7 +1617,10 @@ async function guessCommonPaths(
 ): Promise<CandidateCollectionResult> {
   const startedAt = Date.now();
   const origin = new URL(startUrl).origin;
-  const candidates = FALLBACK_PATHS.map((path) => ({
+  const fallbackPaths = isRecruitmentStyleUrl(origin)
+    ? [...new Set([...FALLBACK_PATHS, ...RECRUITMENT_STYLE_LISTING_PATHS])]
+    : FALLBACK_PATHS;
+  const candidates = fallbackPaths.map((path) => ({
     url: new URL(path, origin).toString(),
     source: 'path' as const,
   }));
@@ -1007,10 +1705,16 @@ async function selectBestCandidate(
   const companyTokens = getCompanyTokens(startUrl);
   const businessName = getRootDomainLabel(startUrl);
   const minimumSkippedLogScore = SCORE_WEIGHTS.minimumAcceptedScore - 5;
+  const evidenceByUrl = buildCandidateEvidenceMap(candidates);
   const scoredCandidates = candidates
     .map((candidate) => ({
       ...candidate,
-      ...getCandidateScoreBreakdown(candidate, businessName, startUrl),
+      ...getCandidateScoreBreakdown(
+        candidate,
+        businessName,
+        startUrl,
+        evidenceByUrl.get(normalizeStoredUrl(candidate.url)),
+      ),
     }))
     .sort((left, right) => right.score - left.score);
 
@@ -1021,33 +1725,21 @@ async function selectBestCandidate(
     reasons: candidate.reasons,
   }));
 
-  console.log('Job discovery top candidates:', topCandidates);
   logDiscovery('scoring', {
     website: startUrl,
     candidateCount: scoredCandidates.length,
     topCandidates,
   });
 
-  const overviewCandidates = scoredCandidates.filter((candidate) =>
-    isLikelyJobOverviewPage(candidate.url),
-  );
-  const detailCandidates = scoredCandidates.filter((candidate) =>
-    hasJobDetailPattern(candidate.url),
-  );
-  const prioritizedCandidates =
-    overviewCandidates.length > 0
-      ? [
-          ...overviewCandidates,
-          ...scoredCandidates.filter(
-            (candidate) => !isLikelyJobOverviewPage(candidate.url),
-          ),
-        ]
-      : scoredCandidates;
+  const prioritizedCandidates = scoredCandidates;
 
   logDiscovery('debug-priority', {
     website: startUrl,
-    overviewCount: overviewCandidates.length,
-    detailCount: detailCandidates.length,
+    orderedCandidates: prioritizedCandidates.map((candidate) => ({
+      url: candidate.url,
+      score: candidate.score,
+      source: candidate.source,
+    })),
   });
 
   const bestCandidate = scoredCandidates[0] ?? null;
@@ -1110,51 +1802,72 @@ async function selectBestCandidate(
       continue;
     }
 
-    const dedupeKey = getCandidateDedupeKey(candidate.url);
+    let triedAnyTarget = false;
 
-    if (!dedupeKey || seenUrls.has(dedupeKey)) {
-      logSkippedCandidate({
-        website: startUrl,
-        url: candidate.url,
-        score: candidate.score,
-        reason: 'duplicate',
-      });
-      continue;
+    for (const targetUrl of expandCandidateFinalizationTargets(candidate.url)) {
+      const dedupeKey = getCandidateDedupeKey(targetUrl);
+
+      if (!dedupeKey || seenUrls.has(dedupeKey)) {
+        continue;
+      }
+
+      seenUrls.add(dedupeKey);
+      triedAnyTarget = true;
+
+      const finalized = await finalizeCandidateUrl(
+        targetUrl,
+        startUrl,
+        companyTokens,
+        { checkSoft404Title: shouldCheckSoft404(candidate) },
+      );
+
+      if (finalized) {
+        const normalizedFinalized =
+          await normalizeSelectedDetailPageToParentListing(
+            candidate,
+            finalized,
+            startUrl,
+            companyTokens,
+          );
+
+        if (targetUrl !== candidate.url) {
+          logDiscovery('parent-promotion', {
+            website: startUrl,
+            candidateUrl: candidate.url,
+            promotedUrl: targetUrl,
+            selectedUrl: normalizedFinalized.jobsUrl,
+            score: candidate.score,
+          });
+        }
+
+        logDiscovery('decision', {
+          website: startUrl,
+          candidateUrl: candidate.url,
+          finalizedTargetUrl: targetUrl,
+          selectedUrl: normalizedFinalized.jobsUrl,
+          score: candidate.score,
+          reason:
+            normalizedFinalized.jobsUrl !== finalized.jobsUrl ||
+            targetUrl !== candidate.url
+              ? 'selected-after-parent-promotion'
+              : targetUrl === candidate.url
+                ? 'selected-after-finalize'
+                : 'selected-after-parent-promotion',
+        });
+
+        return {
+          finalized: normalizedFinalized,
+          selected: candidate,
+          scoredCandidates,
+        };
+      }
     }
 
-    seenUrls.add(dedupeKey);
-
-    console.log('TRYING:', candidate.url, candidate.score);
-
-    const finalized = await finalizeCandidateUrl(
-      candidate.url,
-      startUrl,
-      companyTokens,
-      { checkSoft404Title: shouldCheckSoft404(candidate) },
-    );
-
-    if (finalized) {
-      console.log('SELECTED:', candidate.url);
-      logDiscovery('decision', {
-        website: startUrl,
-        selectedUrl: finalized.jobsUrl,
-        score: candidate.score,
-        reason: 'selected-after-finalize',
-      });
-
-      return {
-        finalized,
-        selected: candidate,
-        scoredCandidates,
-      };
-    }
-
-    console.log('REJECTED:', candidate.url);
     logSkippedCandidate({
       website: startUrl,
       url: candidate.url,
       score: candidate.score,
-      reason: 'finalize-failed',
+      reason: triedAnyTarget ? 'finalize-failed' : 'duplicate',
     });
   }
 
@@ -1228,10 +1941,16 @@ export async function discoverByHeuristics(
   }
 
   const crawlResult = await crawlForJobPage(reachability.finalUrl);
+  // console.log(`crawl:`);
+  // console.log(crawlResult);
   const htmlResult = await inspectFooterForJobPage(reachability.finalUrl);
+  // console.log(`footer:`);
+  // console.log(htmlResult);
   const sitemapResult = await discoverFromSitemapCandidates(
     reachability.finalUrl,
   );
+  // console.log(`sitemap:`);
+  // console.log(sitemapResult);
   const fallbackResult = await guessCommonPaths(reachability.finalUrl);
   const subdomainResult = await guessDutchRecruitmentDomains(
     reachability.finalUrl,
@@ -1249,6 +1968,7 @@ export async function discoverByHeuristics(
     reachability.finalUrl,
     allCandidates,
   );
+
   const attempts = [
     updateAttemptWithSelection(
       crawlResult.attempt,

@@ -3,11 +3,19 @@ import path from 'node:path';
 
 export type DiscoveryLogType =
   | 'results'
+  | 'recruitment-style-host'
+  | 'recruitment-root-pivot'
+  | 'recruitment-root-preferred-path'
+  | 'sitemap-cluster'
   | 'scoring'
+  | 'crawl-deeper'
   | 'debug-priority'
   | 'decision'
+  | 'finalize-reject'
   | 'skipped'
   | 'low-confidence'
+  | 'parent-promotion'
+  | 'pivot-explore'
   | 'errors';
 
 type DiscoveryLogEntry = {

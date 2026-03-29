@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { and, asc, eq, isNotNull, ne } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNotNull, ne } from 'drizzle-orm';
 import { db } from '../db';
 import { businesses } from '../schema/businesses';
 import { jobDiscoveryRuns } from '../schema/job_discovery_runs';
