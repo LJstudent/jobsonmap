@@ -16,8 +16,16 @@ import {
   discoverFromSitemap,
   type SitemapClusterConfidence,
 } from './sitemap-discovery.service';
+import {
+  buildCanonicalSelection,
+  classifyPageType,
+  extractPageFeatures,
+  type CanonicalSelection,
+  type PageFeatures,
+  type PageType,
+} from './page-classification.service';
 
-export type DiscoveryStatus = 'found' | 'not_found' | 'error';
+export type DiscoveryStatus = 'found' | 'not_found' | 'ambiguous' | 'error';
 export type DiscoveryMethod = 'crawl' | 'sitemap' | 'path_guess';
 
 export type DiscoveryAttempt = {
@@ -31,9 +39,24 @@ export type DiscoveryAttempt = {
 export type JobPageDiscoveryResult = {
   status: DiscoveryStatus;
   jobsUrl: string | null;
+  canonicalUrl: string | null;
+  pageType: PageType | null;
+  jobsOverviewUrl: string | null;
+  employerBrandUrl: string | null;
+  externalAtsUrl: string | null;
+  confidence: number;
+  reasons: string[];
   method: DiscoveryMethod | null;
   platform: string | null;
   attempts: DiscoveryAttempt[];
+  topCandidates: Array<{
+    url: string;
+    source: Candidate['source'];
+    pageType: PageType;
+    score: number;
+    confidence: number;
+    reasons: string[];
+  }>;
 };
 
 export type Candidate = {
@@ -89,10 +112,24 @@ type ScoredCandidate = Candidate & {
   reasons: string[];
 };
 
+type ClassifiedCandidate = ScoredCandidate & {
+  features: PageFeatures;
+  pageType: PageType;
+  confidence: number;
+  canonicalSelection: CanonicalSelection;
+  classificationReasons: string[];
+  canonicalUrl: string | null;
+  rankingScore: number;
+};
+
 type CandidateSelection = {
   finalized: FinalizedCandidate | null;
-  selected: ScoredCandidate | null;
-  scoredCandidates: ScoredCandidate[];
+  selected: ClassifiedCandidate | null;
+  scoredCandidates: ClassifiedCandidate[];
+  status: Exclude<DiscoveryStatus, 'error'>;
+  canonicalSelection: CanonicalSelection | null;
+  topCandidates: JobPageDiscoveryResult['topCandidates'];
+  reasons: string[];
 };
 
 export const STRONG_JOB_KEYWORDS = [
@@ -173,6 +210,9 @@ const ATS_PATTERNS = [
   { provider: 'recruitee', pattern: /(^|\.)recruitee\.com$/i },
   { provider: 'workable', pattern: /(^|\.)workable\.com$/i },
   { provider: 'homerun', pattern: /(^|\.)homerun\.co$/i },
+  { provider: 'smartrecruiters', pattern: /(^|\.)smartrecruiters\.com$/i },
+  { provider: 'breezy', pattern: /(^|\.)breezy\.hr$/i },
+  { provider: 'personio', pattern: /(^|\.)personio\.(?:de|com)$/i },
 ];
 
 const RECRUITMENT_HOST_KEYWORDS = [
@@ -933,6 +973,202 @@ function hasJobIntent(candidate: Pick<ScoredCandidate, 'reasons'>): boolean {
       reason.includes('ats=') ||
       reason.includes('overview'),
   );
+}
+
+function getPageTypePriority(pageType: PageType): number {
+  switch (pageType) {
+    case 'job_overview':
+      return 500;
+    case 'career_landing':
+      return 400;
+    case 'external_ats':
+      return 350;
+    case 'job_detail':
+      return 250;
+    case 'article_or_news':
+      return 25;
+    case 'other':
+      return 0;
+  }
+}
+
+function getClassifiedCandidateRankingScore(
+  candidate: ScoredCandidate,
+  pageType: PageType,
+  confidence: number,
+  canonicalSelection: CanonicalSelection,
+): number {
+  const canonicalBonus = canonicalSelection.canonicalUrl ? 80 : -80;
+  const handoffBonus =
+    canonicalSelection.jobsOverviewUrl || canonicalSelection.externalAtsUrl
+      ? 35
+      : 0;
+  const articlePenalty = pageType === 'article_or_news' ? -250 : 0;
+  const genericCareerPenalty =
+    pageType === 'career_landing' &&
+    !canonicalSelection.jobsOverviewUrl &&
+    !canonicalSelection.externalAtsUrl
+      ? -60
+      : 0;
+
+  return (
+    getPageTypePriority(pageType) +
+    confidence * 100 +
+    candidate.score +
+    canonicalBonus +
+    handoffBonus +
+    articlePenalty +
+    genericCareerPenalty
+  );
+}
+
+function getCanonicalizationTargets(candidate: ClassifiedCandidate): string[] {
+  const parentPathGuesses =
+    candidate.pageType === 'job_detail'
+      ? getDetailOverviewPathGuesses(candidate.features.normalizedUrl)
+      : [];
+  const targets = [
+    candidate.canonicalSelection.canonicalUrl,
+    ...(candidate.pageType === 'job_detail'
+      ? expandCandidateFinalizationTargets(candidate.features.normalizedUrl)
+      : []),
+    ...parentPathGuesses,
+    ...(candidate.pageType === 'career_landing' ||
+    candidate.pageType === 'article_or_news'
+      ? [
+          candidate.canonicalSelection.jobsOverviewUrl,
+          candidate.canonicalSelection.externalAtsUrl,
+        ]
+      : []),
+    candidate.pageType === 'job_detail'
+      ? candidate.features.normalizedUrl
+      : null,
+  ].filter((value): value is string => Boolean(value));
+
+  return [...new Set(targets.map((target) => normalizeStoredUrl(target)))];
+}
+
+function getDetailOverviewPathGuesses(url: string): string[] {
+  try {
+    const parsed = new URL(url);
+    const segments = parsed.pathname
+      .toLowerCase()
+      .replace(/\/+$/, '')
+      .split('/')
+      .filter(Boolean);
+    const guesses = new Set<string>();
+
+    for (let index = 0; index < segments.length - 1; index += 1) {
+      const segment = segments[index];
+      const overviewSegment =
+        segment === 'vacature'
+          ? 'vacatures'
+          : segment === 'vacancy'
+            ? 'vacancies'
+            : segment;
+
+      if (
+        ['vacatures', 'vacancies', 'jobs', 'careers', 'werken-bij'].includes(
+          overviewSegment ?? '',
+        )
+      ) {
+        const overviewUrl = new URL(parsed.origin);
+        overviewUrl.pathname = `/${[
+          ...segments.slice(0, index),
+          overviewSegment,
+        ].join('/')}`;
+        overviewUrl.search = '';
+        overviewUrl.hash = '';
+        guesses.add(normalizeStoredUrl(overviewUrl.toString()));
+      }
+    }
+
+    return [...guesses];
+  } catch {
+    return [];
+  }
+}
+
+async function fetchClassifiedCandidate(
+  candidate: ScoredCandidate,
+  startUrl: string,
+  companyTokens: string[],
+): Promise<ClassifiedCandidate | null> {
+  if (isFileLikeUrl(candidate.url)) {
+    return null;
+  }
+
+  const atsProvider = detectAtsProvider(candidate.url);
+  const recruitmentDomainSignal = isRecruitmentDomain(
+    candidate.url,
+    companyTokens,
+  );
+  const sameRoot = isSameRootDomain(candidate.url, startUrl);
+
+  if (!sameRoot && !atsProvider && !recruitmentDomainSignal) {
+    return null;
+  }
+
+  const probe = await testLightweightUrl(candidate.url);
+
+  if (!probe.ok) {
+    return null;
+  }
+
+  const finalUrl = normalizeStoredUrl(probe.finalUrl);
+  const finalAtsProvider = detectAtsProvider(finalUrl);
+  let html = '';
+
+  if (!finalAtsProvider) {
+    try {
+      const page = await fetchHtmlPage(finalUrl);
+      html = page.html;
+    } catch {
+      return null;
+    }
+  }
+
+  const features = extractPageFeatures(html, finalUrl, startUrl);
+  const classification = classifyPageType(features);
+  const canonicalSelection = buildCanonicalSelection(features, classification);
+  const rankingScore = getClassifiedCandidateRankingScore(
+    candidate,
+    classification.pageType,
+    classification.confidence,
+    canonicalSelection,
+  );
+
+  logDiscovery('features', {
+    website: startUrl,
+    candidateUrl: candidate.url,
+    finalUrl,
+    source: candidate.source,
+    features,
+  });
+
+  logDiscovery('classification', {
+    website: startUrl,
+    candidateUrl: candidate.url,
+    finalUrl,
+    source: candidate.source,
+    pageType: classification.pageType,
+    confidence: classification.confidence,
+    reasons: classification.reasons,
+    canonicalSelection,
+    legacyScore: candidate.score,
+    rankingScore,
+  });
+
+  return {
+    ...candidate,
+    features,
+    pageType: classification.pageType,
+    confidence: classification.confidence,
+    canonicalSelection,
+    classificationReasons: classification.reasons,
+    canonicalUrl: canonicalSelection.canonicalUrl,
+    rankingScore,
+  };
 }
 
 function getCandidateDedupeKey(url: string): string | null {
@@ -1714,7 +1950,6 @@ async function selectBestCandidate(
 ): Promise<CandidateSelection> {
   const companyTokens = getCompanyTokens(startUrl);
   const businessName = getRootDomainLabel(startUrl);
-  const minimumSkippedLogScore = SCORE_WEIGHTS.minimumAcceptedScore - 5;
   const evidenceByUrl = buildCandidateEvidenceMap(candidates);
   const scoredCandidates = candidates
     .map((candidate) => ({
@@ -1728,101 +1963,158 @@ async function selectBestCandidate(
     }))
     .sort((left, right) => right.score - left.score);
 
-  const topCandidates = scoredCandidates.slice(0, 5).map((candidate) => ({
-    url: candidate.url,
-    source: candidate.source,
-    score: candidate.score,
-    reasons: candidate.reasons,
-  }));
-
   logDiscovery('scoring', {
     website: startUrl,
     candidateCount: scoredCandidates.length,
-    topCandidates,
-  });
-
-  const prioritizedCandidates = scoredCandidates;
-
-  logDiscovery('debug-priority', {
-    website: startUrl,
-    orderedCandidates: prioritizedCandidates.map((candidate) => ({
+    topCandidates: scoredCandidates.slice(0, 10).map((candidate) => ({
       url: candidate.url,
-      score: candidate.score,
       source: candidate.source,
+      score: candidate.score,
+      reasons: candidate.reasons,
     })),
   });
 
-  const bestCandidate = scoredCandidates[0] ?? null;
-
-  if (
-    !bestCandidate ||
-    bestCandidate.score < SCORE_WEIGHTS.minimumAcceptedScore
-  ) {
+  if (scoredCandidates.length === 0) {
     logDiscovery('low-confidence', {
       website: startUrl,
-      minimumAcceptedScore: SCORE_WEIGHTS.minimumAcceptedScore,
-      bestCandidate,
-      topCandidates,
-      reason: !bestCandidate ? 'no-candidates' : 'score-below-threshold',
+      reason: 'no-candidates',
     });
 
     return {
       finalized: null,
       selected: null,
-      scoredCandidates,
+      scoredCandidates: [],
+      status: 'not_found',
+      canonicalSelection: null,
+      topCandidates: [],
+      reasons: ['no-candidates'],
     };
   }
 
-  const seenUrls = new Set<string>();
-  let skippedLogCount = 0;
+  const classifiedCandidates: ClassifiedCandidate[] = [];
+  const seenCandidateUrls = new Set<string>();
 
-  function logSkippedCandidate(payload: Record<string, unknown>): void {
-    const score =
-      typeof payload.score === 'number'
-        ? payload.score
-        : Number.NEGATIVE_INFINITY;
+  for (const candidate of scoredCandidates) {
+    const dedupeKey = getCandidateDedupeKey(candidate.url);
 
-    if (score < minimumSkippedLogScore || skippedLogCount >= 20) {
-      return;
-    }
-
-    skippedLogCount += 1;
-    logDiscovery('skipped', payload);
-  }
-
-  for (const candidate of prioritizedCandidates) {
-    if (candidate.score < SCORE_WEIGHTS.minimumAcceptedScore) {
-      logSkippedCandidate({
+    if (!dedupeKey || seenCandidateUrls.has(dedupeKey)) {
+      logDiscovery('skipped', {
         website: startUrl,
         url: candidate.url,
         score: candidate.score,
-        reason: 'below-min-score',
-      });
-      break;
-    }
-
-    if (!hasJobIntent(candidate)) {
-      logSkippedCandidate({
-        website: startUrl,
-        url: candidate.url,
-        score: candidate.score,
-        reasons: candidate.reasons,
-        reason: 'no-job-intent',
+        reason: 'duplicate-before-classification',
       });
       continue;
     }
 
-    let triedAnyTarget = false;
+    seenCandidateUrls.add(dedupeKey);
 
-    for (const targetUrl of expandCandidateFinalizationTargets(candidate.url)) {
+    const classified = await fetchClassifiedCandidate(
+      candidate,
+      startUrl,
+      companyTokens,
+    );
+
+    if (!classified) {
+      logDiscovery('skipped', {
+        website: startUrl,
+        url: candidate.url,
+        score: candidate.score,
+        reason: 'classification-fetch-failed',
+      });
+      continue;
+    }
+
+    classifiedCandidates.push(classified);
+  }
+
+  const rankedCandidates = classifiedCandidates.sort((left, right) => {
+    if (right.rankingScore !== left.rankingScore) {
+      return right.rankingScore - left.rankingScore;
+    }
+
+    return right.score - left.score;
+  });
+
+  const topCandidates = rankedCandidates.slice(0, 8).map((candidate) => ({
+    url: candidate.features.normalizedUrl,
+    source: candidate.source,
+    pageType: candidate.pageType,
+    score: candidate.rankingScore,
+    confidence: candidate.confidence,
+    reasons: [
+      ...candidate.classificationReasons,
+      ...candidate.canonicalSelection.reasons,
+      ...candidate.reasons,
+    ],
+  }));
+
+  logDiscovery('debug-priority', {
+    website: startUrl,
+    orderedCandidates: rankedCandidates.map((candidate) => ({
+      url: candidate.features.normalizedUrl,
+      source: candidate.source,
+      pageType: candidate.pageType,
+      confidence: candidate.confidence,
+      legacyScore: candidate.score,
+      rankingScore: candidate.rankingScore,
+      canonicalUrl: candidate.canonicalSelection.canonicalUrl,
+      reasons: candidate.canonicalSelection.reasons,
+    })),
+  });
+
+  const seenTargets = new Set<string>();
+
+  for (const candidate of rankedCandidates) {
+    if (
+      !candidate.canonicalSelection.canonicalUrl &&
+      candidate.pageType !== 'job_detail'
+    ) {
+      logDiscovery('skipped', {
+        website: startUrl,
+        url: candidate.features.normalizedUrl,
+        pageType: candidate.pageType,
+        confidence: candidate.confidence,
+        score: candidate.rankingScore,
+        reasons: candidate.canonicalSelection.reasons,
+        reason: 'no-canonical-target',
+      });
+      continue;
+    }
+
+    if (
+      candidate.pageType === 'article_or_news' &&
+      !candidate.canonicalSelection.jobsOverviewUrl &&
+      !candidate.canonicalSelection.externalAtsUrl
+    ) {
+      logDiscovery('skipped', {
+        website: startUrl,
+        url: candidate.features.normalizedUrl,
+        pageType: candidate.pageType,
+        confidence: candidate.confidence,
+        score: candidate.rankingScore,
+        reasons: candidate.canonicalSelection.reasons,
+        reason: 'article-without-strong-career-target',
+      });
+      continue;
+    }
+
+    for (const targetUrl of getCanonicalizationTargets(candidate)) {
       const dedupeKey = getCandidateDedupeKey(targetUrl);
 
-      if (!dedupeKey || seenUrls.has(dedupeKey)) {
+      if (!dedupeKey || seenTargets.has(dedupeKey)) {
         continue;
       }
 
-      seenUrls.add(dedupeKey);
-      triedAnyTarget = true;
+      seenTargets.add(dedupeKey);
+
+      logDiscovery('canonicalization', {
+        website: startUrl,
+        candidateUrl: candidate.features.normalizedUrl,
+        targetUrl,
+        pageType: candidate.pageType,
+        reasons: candidate.canonicalSelection.reasons,
+      });
 
       const finalized = await finalizeCandidateUrl(
         targetUrl,
@@ -1840,59 +2132,104 @@ async function selectBestCandidate(
             companyTokens,
           );
 
-        if (targetUrl !== candidate.url) {
+        if (targetUrl !== candidate.features.normalizedUrl) {
           logDiscovery('parent-promotion', {
             website: startUrl,
-            candidateUrl: candidate.url,
+            candidateUrl: candidate.features.normalizedUrl,
             promotedUrl: targetUrl,
             selectedUrl: normalizedFinalized.jobsUrl,
-            score: candidate.score,
+            score: candidate.rankingScore,
+            pageType: candidate.pageType,
           });
         }
 
         logDiscovery('decision', {
           website: startUrl,
-          candidateUrl: candidate.url,
+          candidateUrl: candidate.features.normalizedUrl,
           finalizedTargetUrl: targetUrl,
           selectedUrl: normalizedFinalized.jobsUrl,
-          score: candidate.score,
+          pageType: candidate.pageType,
+          confidence: candidate.confidence,
+          score: candidate.rankingScore,
+          legacyScore: candidate.score,
           reason:
             normalizedFinalized.jobsUrl !== finalized.jobsUrl ||
-            targetUrl !== candidate.url
+            targetUrl !== candidate.features.normalizedUrl
               ? 'selected-after-parent-promotion'
-              : targetUrl === candidate.url
+              : targetUrl === candidate.features.normalizedUrl
                 ? 'selected-after-finalize'
                 : 'selected-after-parent-promotion',
+          classificationReasons: candidate.classificationReasons,
+          canonicalizationReasons: candidate.canonicalSelection.reasons,
         });
+
+        const canonicalSelection: CanonicalSelection = {
+          ...candidate.canonicalSelection,
+          canonicalUrl: normalizedFinalized.jobsUrl,
+          jobsOverviewUrl:
+            candidate.pageType === 'job_overview' ||
+            candidate.pageType === 'job_detail'
+              ? normalizedFinalized.jobsUrl
+              : candidate.canonicalSelection.jobsOverviewUrl,
+          externalAtsUrl: detectAtsProvider(normalizedFinalized.jobsUrl)
+            ? normalizedFinalized.jobsUrl
+            : candidate.canonicalSelection.externalAtsUrl,
+        };
 
         return {
           finalized: normalizedFinalized,
           selected: candidate,
-          scoredCandidates,
+          scoredCandidates: rankedCandidates,
+          status: 'found',
+          canonicalSelection,
+          topCandidates,
+          reasons: [
+            `selected-page-type=${candidate.pageType}`,
+            ...candidate.classificationReasons,
+            ...candidate.canonicalSelection.reasons,
+          ],
         };
       }
     }
 
-    logSkippedCandidate({
+    logDiscovery('skipped', {
       website: startUrl,
-      url: candidate.url,
-      score: candidate.score,
-      reason: triedAnyTarget ? 'finalize-failed' : 'duplicate',
+      url: candidate.features.normalizedUrl,
+      pageType: candidate.pageType,
+      confidence: candidate.confidence,
+      score: candidate.rankingScore,
+      reason: 'canonical-finalize-failed',
     });
   }
 
+  const ambiguousCandidate = rankedCandidates.find(
+    (candidate) =>
+      candidate.pageType === 'career_landing' ||
+      candidate.pageType === 'job_detail',
+  );
+  const status: Exclude<DiscoveryStatus, 'error'> = ambiguousCandidate
+    ? 'ambiguous'
+    : 'not_found';
+
   logDiscovery('low-confidence', {
     website: startUrl,
-    minimumAcceptedScore: SCORE_WEIGHTS.minimumAcceptedScore,
-    bestCandidate,
     topCandidates,
-    reason: 'candidate-finalization-failed',
+    reason: 'candidate-canonicalization-failed',
+    status,
   });
 
   return {
     finalized: null,
     selected: null,
-    scoredCandidates,
+    scoredCandidates: rankedCandidates,
+    status,
+    canonicalSelection: null,
+    topCandidates,
+    reasons: [
+      status === 'ambiguous'
+        ? 'ambiguous-candidates'
+        : 'no-valid-canonical-url',
+    ],
   };
 }
 
@@ -1936,8 +2273,16 @@ export async function discoverByHeuristics(
     return {
       status: unreachableStatus,
       jobsUrl: null,
+      canonicalUrl: null,
+      pageType: null,
+      jobsOverviewUrl: null,
+      employerBrandUrl: null,
+      externalAtsUrl: null,
+      confidence: 0,
+      reasons: ['website-unreachable'],
       method: null,
       platform: null,
+      topCandidates: [],
       attempts: [
         {
           method: 'crawl',
@@ -2016,8 +2361,16 @@ export async function discoverByHeuristics(
     return {
       status: 'found',
       jobsUrl: selection.finalized.jobsUrl,
+      canonicalUrl: selection.finalized.jobsUrl,
+      pageType: selection.selected.pageType,
+      jobsOverviewUrl: selection.canonicalSelection?.jobsOverviewUrl ?? null,
+      employerBrandUrl: selection.canonicalSelection?.employerBrandUrl ?? null,
+      externalAtsUrl: selection.canonicalSelection?.externalAtsUrl ?? null,
+      confidence: selection.selected.confidence,
+      reasons: selection.reasons,
       method: mapSourceToMethod(selection.selected.source),
       platform: selection.finalized.platform,
+      topCandidates: selection.topCandidates,
       attempts,
     };
   }
@@ -2038,10 +2391,18 @@ export async function discoverByHeuristics(
       allCandidates.length === 0 &&
       attempts.every((attempt) => attempt.status === 'error')
         ? 'error'
-        : 'not_found',
+        : selection.status,
     jobsUrl: null,
+    canonicalUrl: null,
+    pageType: null,
+    jobsOverviewUrl: null,
+    employerBrandUrl: null,
+    externalAtsUrl: null,
+    confidence: 0,
+    reasons: selection.reasons,
     method: null,
     platform: null,
+    topCandidates: selection.topCandidates,
     attempts,
   };
 }

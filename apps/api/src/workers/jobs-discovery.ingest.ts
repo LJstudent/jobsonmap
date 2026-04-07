@@ -104,6 +104,7 @@ async function run() {
   const summary: Record<DiscoveryStatus, number> = {
     found: 0,
     not_found: 0,
+    ambiguous: 0,
     error: 0,
   };
 
@@ -120,6 +121,11 @@ async function run() {
         jobsUrl: result.jobsUrl,
         method: result.method,
         platform: result.platform,
+        canonicalUrl: result.canonicalUrl,
+        pageType: result.pageType,
+        confidence: result.confidence,
+        reasons: result.reasons,
+        topCandidates: result.topCandidates,
         attempts: result.attempts,
       });
 
