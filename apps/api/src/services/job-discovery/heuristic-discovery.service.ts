@@ -196,23 +196,33 @@ const PIVOT_PATHS = [
   '/company',
   '/team',
 ];
-const OBVIOUS_NON_JOBS_FINAL_PATHS = [
-  '/404',
-  '/about',
-  '/about-us',
-  '/article',
-  '/articles',
-  '/blog',
-  '/company',
-  '/contact',
-  '/login',
-  '/over-ons',
-  '/partner',
-  '/partners',
-  '/team',
-  '/workflow',
-  '/workshops',
+
+export const OBVIOUS_NON_JOBS_FINAL_PATHS = [
+  '404',
+  'about',
+  'about-us',
+  'article',
+  'articles',
+  'blog',
+  'company',
+  'contact',
+  'login',
+  'over-ons',
+  'partner',
+  'partners',
+  'team',
+  'workflow',
+  'workshops',
+
+  // 👇 NEW content segments
+  'news',
+  'glossary',
+  'insights',
+  'knowledge',
+  'resources',
+  'academy',
 ];
+
 const DEEPER_EXPLORATION_PATHS = [
   '/about',
   '/careers',
