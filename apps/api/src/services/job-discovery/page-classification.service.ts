@@ -37,6 +37,9 @@ export type PageFeatures = {
   listingCardCount: number;
   externalAtsLinks: string[];
   internalJobLinks: string[];
+  rankedInternalJobLinks: string[];
+  parentOverviewCandidates: string[];
+  articleKeywordCount: number;
   detectedPageTypeHints: string[];
 };
 
@@ -74,6 +77,11 @@ const ATS_HOST_PATTERNS = [
   /(^|\.)breezy\.hr$/i,
   /(^|\.)personio\.de$/i,
   /(^|\.)personio\.com$/i,
+  /(^|\.)myworkdayjobs\.com$/i,
+  /(^|\.)jobvite\.com$/i,
+  /(^|\.)onlyfy\.jobs$/i,
+  /(^|\.)rexx-systems\.com$/i,
+  /(^|\.)bamboohr\.com$/i,
 ];
 
 const ARTICLE_SEGMENTS = new Set([
@@ -136,17 +144,17 @@ const OVERVIEW_KEYWORDS = [
 const DETAIL_KEYWORDS = [
   'apply',
   'apply now',
+  'functieomschrijving',
   'job description',
   'requirements',
   'responsibilities',
   'solliciteer',
   'solliciteer direct',
+  'vacature',
   'vereisten',
   'verantwoordelijkheden',
-  'vacature',
   'what we offer',
   'wie ben jij',
-  'functieomschrijving',
 ];
 
 const JOB_URL_KEYWORDS = [
@@ -183,15 +191,6 @@ const FILTER_KEYWORDS = [
   'vakgebied',
 ];
 
-function stripHtml(value: string): string {
-  return decodeHtmlEntities(value)
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
 function decodeHtmlEntities(value: string): string {
   return value
     .replace(/&amp;/gi, '&')
@@ -200,6 +199,15 @@ function decodeHtmlEntities(value: string): string {
     .replace(/&nbsp;/gi, ' ')
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>');
+}
+
+function stripHtml(value: string): string {
+  return decodeHtmlEntities(value)
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function normalizeForMatch(value: string): string {
@@ -365,6 +373,181 @@ function countListingCards(html: string): number {
   return cardClassMatches.length + structuredJobMatches.length;
 }
 
+function dedupeUrls(urls: string[]): string[] {
+  return [...new Set(urls.map((url) => normalizeStoredUrl(url)))];
+}
+
+function looksLikePaginationUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.searchParams.has('page');
+  } catch {
+    return false;
+  }
+}
+
+function looksLikeDetailUrl(url: string): boolean {
+  const segments = getPathSegments(url);
+  const depth = segments.length;
+  const last = segments.at(-1) ?? '';
+  const parent = segments.at(-2) ?? '';
+
+  if (depth < 2) {
+    return false;
+  }
+
+  const parentLooksJobLike = [
+    'vacature',
+    'vacatures',
+    'vacancy',
+    'vacancies',
+    'job',
+    'jobs',
+    'position',
+    'positions',
+    'careers',
+    'werken-bij',
+    'werkenbij',
+  ].includes(parent);
+
+  const lastLooksOverview = hasAny(last, OVERVIEW_KEYWORDS);
+  const lastLooksLongSlug =
+    last.includes('-') || last.length >= 12 || /^[a-z0-9]+$/i.test(last);
+
+  return parentLooksJobLike && !lastLooksOverview && lastLooksLongSlug;
+}
+
+function isLikelyOverviewUrl(url: string): boolean {
+  const segments = getPathSegments(url);
+  const last = segments.at(-1) ?? '';
+
+  if (looksLikeDetailUrl(url)) {
+    return false;
+  }
+
+  if (ARTICLE_SEGMENTS.has(last)) {
+    return false;
+  }
+
+  if (hasDateInPath(segments)) {
+    return false;
+  }
+
+  return hasAny(url, OVERVIEW_KEYWORDS) || segments.length <= 1;
+}
+
+function scoreInternalJobLink(url: string, startUrl: string): number {
+  let score = 0;
+  const segments = getPathSegments(url);
+  const last = segments.at(-1) ?? '';
+  const depth = segments.length;
+
+  if (isSameRootDomain(url, startUrl)) score += 25;
+  if (hasAny(url, OVERVIEW_KEYWORDS)) score += 30;
+  if (hasAny(url, CAREER_LANDING_KEYWORDS)) score += 12;
+  if (depth <= 2) score += 10;
+  if (!looksLikePaginationUrl(url)) score += 5;
+
+  if (looksLikeDetailUrl(url)) score -= 30;
+  if (ARTICLE_SEGMENTS.has(last)) score -= 25;
+  if (hasDateInPath(segments)) score -= 25;
+  if (looksLikePaginationUrl(url)) score -= 8;
+
+  score += getMixedIntentSlugPenalty(last);
+
+  return score;
+}
+
+function rankInternalJobLinks(urls: string[], startUrl: string): string[] {
+  return dedupeUrls(urls).sort(
+    (a, b) =>
+      scoreInternalJobLink(b, startUrl) - scoreInternalJobLink(a, startUrl),
+  );
+}
+
+function buildParentOverviewCandidates(url: string): string[] {
+  try {
+    const parsed = new URL(url);
+    const origin = parsed.origin;
+    const segments = getPathSegments(url);
+    const candidates = new Set<string>();
+
+    const add = (pathname: string): void => {
+      const cleanPath = pathname.replace(/\/+$/, '') || '/';
+      candidates.add(normalizeStoredUrl(new URL(cleanPath, origin).toString()));
+    };
+
+    const pathname = `/${segments.join('/')}`;
+
+    const directPatterns: Array<[RegExp, string[]]> = [
+      [/\/vacature\/[^/]+$/i, ['/vacatures', '/werken-bij', '/jobs']],
+      [/\/vacancy\/[^/]+$/i, ['/vacancies', '/careers', '/jobs']],
+      [/\/job\/[^/]+$/i, ['/jobs', '/careers']],
+      [/\/jobs\/[^/]+$/i, ['/jobs', '/careers']],
+      [/\/careers?\/[^/]+$/i, ['/careers', '/jobs']],
+      [/\/werken-bij\/[^/]+$/i, ['/werken-bij', '/vacatures']],
+      [/\/werkenbij\/[^/]+$/i, ['/werkenbij', '/vacatures']],
+      [/\/open-positions\/[^/]+$/i, ['/open-positions', '/careers', '/jobs']],
+    ];
+
+    for (const [pattern, replacements] of directPatterns) {
+      if (pattern.test(pathname)) {
+        for (const replacement of replacements) {
+          add(replacement);
+        }
+      }
+    }
+
+    for (let i = segments.length - 1; i > 0; i -= 1) {
+      const parentPath = `/${segments.slice(0, i).join('/')}`;
+      add(parentPath);
+    }
+
+    const knownOverviewPaths = [
+      '/vacatures',
+      '/vacancies',
+      '/jobs',
+      '/careers',
+      '/werken-bij',
+      '/werkenbij',
+      '/join-us',
+      '/open-positions',
+      '/jouw-carriere',
+      '/job-openings',
+    ];
+
+    for (const candidate of knownOverviewPaths) {
+      add(candidate);
+    }
+
+    return [...candidates].sort((a, b) => {
+      const aScore = scoreInternalJobLink(a, url);
+      const bScore = scoreInternalJobLink(b, url);
+      return bScore - aScore;
+    });
+  } catch {
+    return [];
+  }
+}
+
+function getArticleContext(input: {
+  normalizedUrl: string;
+  title: string;
+  h1: string | null;
+  metaDescription: string | null;
+  breadcrumbs: string[];
+}): string {
+  return [
+    input.normalizedUrl,
+    input.title,
+    input.h1 ?? '',
+    input.metaDescription ?? '',
+    input.breadcrumbs.join(' '),
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
 export function getMixedIntentSlugPenalty(slug: string): number {
   const normalized = normalizeForMatch(slug);
 
@@ -373,22 +556,33 @@ export function getMixedIntentSlugPenalty(slug: string): number {
   }
 
   let penalty = 0;
+  const wordCount = normalized.split(' ').length;
 
-  if (MIXED_INTENT_PHRASES.some((phrase) => normalized.includes(phrase))) {
+  if (
+    MIXED_INTENT_PHRASES.some(
+      (phrase) => phrase !== 'working at' && normalized.includes(phrase),
+    )
+  ) {
     penalty -= 25;
+  }
+
+  if (normalized.includes('working at') && wordCount >= 5) {
+    penalty -= 10;
+  }
+
+  if (
+    /\b(flow|conference|building|house|manager app|guidance|story|guide)\b/.test(
+      normalized,
+    )
+  ) {
+    penalty -= 15;
   }
 
   if (
     /\b(job|career|careers|working|join us)\b/.test(normalized) &&
-    normalized.split(' ').length >= 5
+    wordCount >= 5
   ) {
     penalty -= 20;
-  }
-
-  if (
-    /\b(flow|conference|building|house|manager app|guidance)\b/.test(normalized)
-  ) {
-    penalty -= 15;
   }
 
   return penalty;
@@ -424,6 +618,7 @@ export function extractPageFeatures(
   const ctaTexts = extractCtaTexts(html);
   const anchors = extractAnchors(html, normalizedUrl);
   const visibleTextSnippet = stripHtml(html).slice(0, 2000);
+
   const combinedText = [
     normalizedUrl,
     title,
@@ -436,11 +631,21 @@ export function extractPageFeatures(
   ]
     .filter(Boolean)
     .join(' ');
+
+  const articleContext = getArticleContext({
+    normalizedUrl,
+    title,
+    h1,
+    metaDescription,
+    breadcrumbs,
+  });
+
   const sameRootDomain = isSameRootDomain(normalizedUrl, startUrl);
   const hasArticlePath = pathSegments.some((segment) =>
     ARTICLE_SEGMENTS.has(segment),
   );
-  const articleKeywordCount = countAny(combinedText, ARTICLE_KEYWORDS);
+  const articleKeywordCount = countAny(articleContext, ARTICLE_KEYWORDS);
+
   const internalJobLinks = anchors
     .filter(
       (anchor) =>
@@ -448,32 +653,52 @@ export function extractPageFeatures(
         hasAny(`${anchor.url} ${anchor.text}`, [
           ...JOB_URL_KEYWORDS,
           ...OVERVIEW_KEYWORDS,
+          ...CAREER_LANDING_KEYWORDS,
         ]),
     )
     .map((anchor) => anchor.url);
+
+  const rankedInternalJobLinks = rankInternalJobLinks(
+    internalJobLinks,
+    startUrl,
+  );
+
   const externalAtsLinks = anchors
     .filter(
       (anchor) =>
         !isSameRootDomain(anchor.url, startUrl) && isAtsUrl(anchor.url),
     )
     .map((anchor) => anchor.url);
+
   const applyButtonCount = ctaTexts.filter((text) =>
     hasAny(text, DETAIL_KEYWORDS),
   ).length;
+
   const listingCardCount = countListingCards(html);
+  const parentOverviewCandidates = buildParentOverviewCandidates(normalizedUrl);
   const detectedPageTypeHints: string[] = [];
 
   if (hasArticlePath) detectedPageTypeHints.push('article-path');
   if (hasDateInPath(pathSegments)) detectedPageTypeHints.push('date-path');
   if (isAtsUrl(normalizedUrl)) detectedPageTypeHints.push('ats-host');
-  if (internalJobLinks.length >= 3)
+  if (internalJobLinks.length >= 3) {
     detectedPageTypeHints.push('many-internal-job-links');
-  if (externalAtsLinks.length > 0)
+  }
+  if (externalAtsLinks.length > 0) {
     detectedPageTypeHints.push('external-ats-links');
-  if (applyButtonCount > 0) detectedPageTypeHints.push('apply-cta');
-  if (listingCardCount > 0) detectedPageTypeHints.push('listing-cards');
-  if (articleKeywordCount >= 2) detectedPageTypeHints.push('article-markers');
-  if (isSoft404Title(title)) detectedPageTypeHints.push('soft-404-title');
+  }
+  if (applyButtonCount > 0) {
+    detectedPageTypeHints.push('apply-cta');
+  }
+  if (listingCardCount > 0) {
+    detectedPageTypeHints.push('listing-cards');
+  }
+  if (articleKeywordCount >= 2) {
+    detectedPageTypeHints.push('article-markers');
+  }
+  if (isSoft404Title(title)) {
+    detectedPageTypeHints.push('soft-404-title');
+  }
 
   return {
     url,
@@ -495,11 +720,14 @@ export function extractPageFeatures(
     hasOverviewKeywords: hasAny(combinedText, OVERVIEW_KEYWORDS),
     hasDetailKeywords: hasAny(combinedText, DETAIL_KEYWORDS),
     hasArticleKeywords: articleKeywordCount > 0,
-    vacancyLinkCount: internalJobLinks.length,
+    vacancyLinkCount: dedupeUrls(internalJobLinks).length,
     applyButtonCount,
     listingCardCount,
-    externalAtsLinks: [...new Set(externalAtsLinks)],
-    internalJobLinks: [...new Set(internalJobLinks)],
+    externalAtsLinks: dedupeUrls(externalAtsLinks),
+    internalJobLinks: dedupeUrls(internalJobLinks),
+    rankedInternalJobLinks,
+    parentOverviewCandidates,
+    articleKeywordCount,
     detectedPageTypeHints,
   };
 }
@@ -509,25 +737,28 @@ export function classifyPageType(features: PageFeatures): PageClassification {
   const lastSlug = features.pathSegments.at(-1) ?? '';
   const mixedIntentPenalty = getMixedIntentSlugPenalty(lastSlug);
   const heading = `${features.title} ${features.h1 ?? ''}`;
+
+  const hasFilterSignals = hasAny(
+    `${features.navLabels.join(' ')} ${features.visibleTextSnippet}`,
+    FILTER_KEYWORDS,
+  );
+
   const overviewSignalCount =
     Number(features.hasOverviewKeywords) +
     Number(features.vacancyLinkCount >= 3) +
     Number(features.listingCardCount >= 2) +
-    Number(
-      hasAny(
-        `${features.navLabels.join(' ')} ${features.visibleTextSnippet}`,
-        FILTER_KEYWORDS,
-      ),
-    );
+    Number(hasFilterSignals);
+
   const detailSignalCount =
     Number(features.hasDetailKeywords) +
     Number(features.applyButtonCount > 0) +
     Number(features.depth >= 2 && features.hasJobKeywordsInUrl) +
     Number(countAny(features.visibleTextSnippet, DETAIL_KEYWORDS) >= 2);
+
   const articleSignalCount =
     Number(features.hasArticlePath) +
     Number(features.hasDateInPath) +
-    Number(features.hasArticleKeywords) +
+    Number(features.articleKeywordCount >= 2) +
     Number(mixedIntentPenalty <= -20);
 
   if (features.detectedPageTypeHints.includes('soft-404-title')) {
@@ -580,6 +811,28 @@ export function classifyPageType(features: PageFeatures): PageClassification {
     };
   }
 
+  if (
+    features.hasCareerLandingKeywords &&
+    (features.externalAtsLinks.length > 0 ||
+      features.rankedInternalJobLinks.length > 0 ||
+      features.hasOverviewKeywords) &&
+    detailSignalCount < 4
+  ) {
+    return {
+      pageType: 'career_landing',
+      confidence:
+        features.externalAtsLinks.length > 0 ||
+        features.rankedInternalJobLinks.length > 0
+          ? 0.8
+          : 0.64,
+      reasons: [
+        'career-landing-keywords',
+        `internal-job-links=${features.rankedInternalJobLinks.length}`,
+        `external-ats-links=${features.externalAtsLinks.length}`,
+      ],
+    };
+  }
+
   if (detailSignalCount >= 3 && features.vacancyLinkCount < 3) {
     return {
       pageType: 'job_detail',
@@ -587,27 +840,6 @@ export function classifyPageType(features: PageFeatures): PageClassification {
       reasons: [
         `detail-signals=${detailSignalCount}`,
         `heading=${heading.slice(0, 80)}`,
-      ],
-    };
-  }
-
-  if (
-    features.hasCareerLandingKeywords &&
-    (features.externalAtsLinks.length > 0 ||
-      features.internalJobLinks.length > 0 ||
-      features.hasOverviewKeywords)
-  ) {
-    return {
-      pageType: 'career_landing',
-      confidence:
-        features.externalAtsLinks.length > 0 ||
-        features.internalJobLinks.length > 0
-          ? 0.78
-          : 0.62,
-      reasons: [
-        'career-landing-keywords',
-        `internal-job-links=${features.internalJobLinks.length}`,
-        `external-ats-links=${features.externalAtsLinks.length}`,
       ],
     };
   }
@@ -637,8 +869,15 @@ export function buildCanonicalSelection(
   classification: PageClassification,
 ): CanonicalSelection {
   const jobsOverviewUrl =
-    features.internalJobLinks.find((url) => hasAny(url, OVERVIEW_KEYWORDS)) ??
+    features.rankedInternalJobLinks.find((url) => isLikelyOverviewUrl(url)) ??
+    features.rankedInternalJobLinks[0] ??
     null;
+
+  const parentOverviewUrl =
+    features.parentOverviewCandidates.find((url) => isLikelyOverviewUrl(url)) ??
+    features.parentOverviewCandidates[0] ??
+    null;
+
   const externalAtsUrl = features.externalAtsLinks[0] ?? null;
   const employerBrandUrl =
     classification.pageType === 'career_landing'
@@ -656,6 +895,7 @@ export function buildCanonicalSelection(
         employerBrandUrl: null,
         externalAtsUrl,
       };
+
     case 'career_landing':
       return {
         canonicalUrl:
@@ -674,6 +914,7 @@ export function buildCanonicalSelection(
         employerBrandUrl,
         externalAtsUrl,
       };
+
     case 'external_ats':
       return {
         canonicalUrl: features.normalizedUrl,
@@ -684,24 +925,31 @@ export function buildCanonicalSelection(
         employerBrandUrl: null,
         externalAtsUrl: features.normalizedUrl,
       };
-    case 'job_detail':
+
+    case 'job_detail': {
+      const canonicalUrl = jobsOverviewUrl ?? parentOverviewUrl ?? null;
+
       return {
-        canonicalUrl: jobsOverviewUrl,
+        canonicalUrl,
         pageType: classification.pageType,
         confidence: classification.confidence,
         reasons: [
           jobsOverviewUrl
             ? 'job-detail-links-to-overview'
-            : 'job-detail-needs-parent-normalization',
+            : parentOverviewUrl
+              ? 'job-detail-normalized-to-parent-overview-candidate'
+              : 'job-detail-needs-final-validation',
           ...classification.reasons,
         ],
-        jobsOverviewUrl,
+        jobsOverviewUrl: canonicalUrl,
         employerBrandUrl: null,
         externalAtsUrl,
       };
+    }
+
     case 'article_or_news':
       return {
-        canonicalUrl: jobsOverviewUrl ?? externalAtsUrl,
+        canonicalUrl: jobsOverviewUrl ?? externalAtsUrl ?? null,
         pageType: classification.pageType,
         confidence: classification.confidence,
         reasons: [
@@ -714,6 +962,7 @@ export function buildCanonicalSelection(
         employerBrandUrl: null,
         externalAtsUrl,
       };
+
     case 'other':
       return {
         canonicalUrl: null,
