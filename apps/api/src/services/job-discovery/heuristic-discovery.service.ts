@@ -1217,6 +1217,39 @@ function getCandidateDedupeKey(url: string): string | null {
   }
 }
 
+function hasSearchQuery(url: string): boolean {
+  try {
+    return new URL(url).search.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function compareSamePathCandidatePreference(
+  left: ScoredCandidate,
+  right: ScoredCandidate,
+): number {
+  const leftHasQuery = hasSearchQuery(left.url);
+  const rightHasQuery = hasSearchQuery(right.url);
+
+  if (leftHasQuery !== rightHasQuery) {
+    return leftHasQuery ? -1 : 1;
+  }
+
+  const leftLength = normalizeStoredUrl(left.url).length;
+  const rightLength = normalizeStoredUrl(right.url).length;
+
+  if (leftLength !== rightLength) {
+    return rightLength - leftLength;
+  }
+
+  if (left.score !== right.score) {
+    return left.score - right.score;
+  }
+
+  return 0;
+}
+
 function expandCandidateFinalizationTargets(candidateUrl: string): string[] {
   const normalizedCandidateUrl = normalizeStoredUrl(candidateUrl);
   const parentListingUrl = hasJobDetailPattern(normalizedCandidateUrl)
@@ -2029,23 +2062,58 @@ async function selectBestCandidate(
   }
 
   const classifiedCandidates: ClassifiedCandidate[] = [];
-  const seenCandidateUrls = new Set<string>();
+  const dedupedCandidates = new Map<string, ScoredCandidate>();
 
   for (const candidate of scoredCandidates) {
     const dedupeKey = getCandidateDedupeKey(candidate.url);
 
-    if (!dedupeKey || seenCandidateUrls.has(dedupeKey)) {
+    if (!dedupeKey) {
       logDiscovery('skipped', {
         website: startUrl,
         url: candidate.url,
         score: candidate.score,
-        reason: 'duplicate-before-classification',
+        reason: 'invalid-dedupe-key',
       });
       continue;
     }
 
-    seenCandidateUrls.add(dedupeKey);
+    const existingCandidate = dedupedCandidates.get(dedupeKey);
 
+    if (!existingCandidate) {
+      dedupedCandidates.set(dedupeKey, candidate);
+      continue;
+    }
+
+    const preferredCandidate =
+      compareSamePathCandidatePreference(candidate, existingCandidate) > 0
+        ? candidate
+        : existingCandidate;
+    const discardedCandidate =
+      preferredCandidate === candidate ? existingCandidate : candidate;
+
+    dedupedCandidates.set(dedupeKey, preferredCandidate);
+
+    logDiscovery('skipped', {
+      website: startUrl,
+      url: discardedCandidate.url,
+      score: discardedCandidate.score,
+      reason: 'duplicate-before-classification',
+      keptUrl: preferredCandidate.url,
+      dedupeKey,
+    });
+  }
+
+  const candidatesForClassification = [...dedupedCandidates.values()].sort(
+    (left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+
+      return compareSamePathCandidatePreference(right, left);
+    },
+  );
+
+  for (const candidate of candidatesForClassification) {
     const classified = await fetchClassifiedCandidate(
       candidate,
       startUrl,
