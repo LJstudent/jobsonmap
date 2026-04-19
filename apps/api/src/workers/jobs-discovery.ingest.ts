@@ -56,7 +56,19 @@ async function loadBusinesses(): Promise<DiscoveryTarget[]> {
       website: businesses.website,
     })
     .from(businesses)
-    .where(and(isNotNull(businesses.website), ne(businesses.website, '')))
+    .where(
+      and(
+        isNotNull(businesses.website),
+        ne(businesses.website, ''),
+        inArray(
+          businesses.id,
+          [
+            8583, 14, 149, 2, 76, 338, 8459, 174, 1144, 1660, 1411, 3471, 80,
+            323, 3621, 4282, 112, 8584, 3404, 3549, 56, 3624, 152,
+          ],
+        ),
+      ),
+    )
     .orderBy(asc(businesses.id)) as Promise<DiscoveryTarget[]>;
 }
 

@@ -975,22 +975,53 @@ function hasJobIntent(candidate: Pick<ScoredCandidate, 'reasons'>): boolean {
   );
 }
 
-function getPageTypePriority(pageType: PageType): number {
-  switch (pageType) {
+function getPageTypeMultiplier(type: PageType): number {
+  switch (type) {
     case 'job_overview':
-      return 500;
+      return 1.0;
     case 'career_landing':
-      return 400;
+      return 1.15;
     case 'external_ats':
-      return 350;
+      return 1.05;
     case 'job_detail':
-      return 250;
+      return 0.55;
     case 'article_or_news':
-      return 25;
+      return 0.2;
     case 'other':
-      return 0;
+      return 0.85;
   }
 }
+
+// hier even checken
+// function getClassifiedCandidateRankingScore(
+//   candidate: ScoredCandidate,
+//   pageType: PageType,
+//   confidence: number,
+//   canonicalSelection: CanonicalSelection,
+// ): number {
+//   const canonicalBonus = canonicalSelection.canonicalUrl ? 80 : -80;
+//   const handoffBonus =
+//     canonicalSelection.jobsOverviewUrl || canonicalSelection.externalAtsUrl
+//       ? 35
+//       : 0;
+//   const articlePenalty = pageType === 'article_or_news' ? -250 : 0;
+//   const genericCareerPenalty =
+//     pageType === 'career_landing' &&
+//     !canonicalSelection.jobsOverviewUrl &&
+//     !canonicalSelection.externalAtsUrl
+//       ? -60
+//       : 0;
+
+//   return (
+//     getPageTypeMultiplier(pageType) +
+//     confidence * 100 +
+//     candidate.score +
+//     canonicalBonus +
+//     handoffBonus +
+//     articlePenalty +
+//     genericCareerPenalty
+//   );
+// }
 
 function getClassifiedCandidateRankingScore(
   candidate: ScoredCandidate,
@@ -998,28 +1029,34 @@ function getClassifiedCandidateRankingScore(
   confidence: number,
   canonicalSelection: CanonicalSelection,
 ): number {
-  const canonicalBonus = canonicalSelection.canonicalUrl ? 80 : -80;
-  const handoffBonus =
-    canonicalSelection.jobsOverviewUrl || canonicalSelection.externalAtsUrl
-      ? 35
-      : 0;
-  const articlePenalty = pageType === 'article_or_news' ? -250 : 0;
-  const genericCareerPenalty =
+  let rankingScore = candidate.score;
+
+  rankingScore *= getPageTypeMultiplier(pageType);
+  rankingScore *= confidence;
+
+  if (canonicalSelection.canonicalUrl) {
+    rankingScore += 80;
+  } else {
+    rankingScore -= 80;
+  }
+
+  if (canonicalSelection.jobsOverviewUrl || canonicalSelection.externalAtsUrl) {
+    rankingScore += 35;
+  }
+
+  if (pageType === 'article_or_news') {
+    rankingScore -= 250;
+  }
+
+  if (
     pageType === 'career_landing' &&
     !canonicalSelection.jobsOverviewUrl &&
     !canonicalSelection.externalAtsUrl
-      ? -60
-      : 0;
+  ) {
+    rankingScore -= 60;
+  }
 
-  return (
-    getPageTypePriority(pageType) +
-    confidence * 100 +
-    candidate.score +
-    canonicalBonus +
-    handoffBonus +
-    articlePenalty +
-    genericCareerPenalty
-  );
+  return Math.round(rankingScore);
 }
 
 function getCanonicalizationTargets(candidate: ClassifiedCandidate): string[] {
