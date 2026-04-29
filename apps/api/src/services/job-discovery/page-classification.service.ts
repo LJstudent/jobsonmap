@@ -118,6 +118,16 @@ const ARTICLE_KEYWORDS = [
   'stories',
 ];
 
+const DUTCH_QUESTION_ARTICLE_SLUG_PREFIXES = [
+  'hoe',
+  'waar',
+  'waarom',
+  'wanneer',
+  'wat',
+  'welke',
+  'wie',
+];
+
 const CAREER_LANDING_KEYWORDS = [
   'careers at',
   'join our team',
@@ -331,12 +341,34 @@ function getPathSegments(url: string): string[] {
   try {
     return new URL(url).pathname
       .toLowerCase()
+      .split('/')
+      .map((segment) => decodeURIComponent(segment))
+      .join('/')
       .replace(/\/+$/, '')
       .split('/')
       .filter(Boolean);
   } catch {
     return [];
   }
+}
+
+export function isLikelyQuestionArticleUrl(url: string): boolean {
+  const segments = getPathSegments(url);
+  const lastSlug = segments.at(-1) ?? '';
+
+  if (
+    !lastSlug ||
+    !segments.some((segment) => ARTICLE_SEGMENTS.has(segment))
+  ) {
+    return false;
+  }
+
+  return DUTCH_QUESTION_ARTICLE_SLUG_PREFIXES.some(
+    (prefix) =>
+      lastSlug === prefix ||
+      lastSlug.startsWith(`${prefix}-`) ||
+      lastSlug.startsWith(`${prefix}_`),
+  );
 }
 
 function isAtsUrl(url: string): boolean {
@@ -419,13 +451,12 @@ function looksLikeDetailUrl(url: string): boolean {
 
 function isLikelyOverviewUrl(url: string): boolean {
   const segments = getPathSegments(url);
-  const last = segments.at(-1) ?? '';
 
   if (looksLikeDetailUrl(url)) {
     return false;
   }
 
-  if (ARTICLE_SEGMENTS.has(last)) {
+  if (segments.some((segment) => ARTICLE_SEGMENTS.has(segment))) {
     return false;
   }
 
@@ -696,6 +727,9 @@ export function extractPageFeatures(
   if (articleKeywordCount >= 2) {
     detectedPageTypeHints.push('article-markers');
   }
+  if (isLikelyQuestionArticleUrl(normalizedUrl)) {
+    detectedPageTypeHints.push('article-question-slug');
+  }
   if (isSoft404Title(title)) {
     detectedPageTypeHints.push('soft-404-title');
   }
@@ -774,6 +808,14 @@ export function classifyPageType(features: PageFeatures): PageClassification {
       pageType: 'external_ats',
       confidence: 0.98,
       reasons: ['ats-host'],
+    };
+  }
+
+  if (features.detectedPageTypeHints.includes('article-question-slug')) {
+    return {
+      pageType: 'article_or_news',
+      confidence: 0.97,
+      reasons: ['article-question-slug'],
     };
   }
 
@@ -948,6 +990,21 @@ export function buildCanonicalSelection(
     }
 
     case 'article_or_news':
+      if (features.detectedPageTypeHints.includes('article-question-slug')) {
+        return {
+          canonicalUrl: null,
+          pageType: classification.pageType,
+          confidence: classification.confidence,
+          reasons: [
+            'hard-rejected-question-article',
+            ...classification.reasons,
+          ],
+          jobsOverviewUrl: null,
+          employerBrandUrl: null,
+          externalAtsUrl,
+        };
+      }
+
       return {
         canonicalUrl: jobsOverviewUrl ?? externalAtsUrl ?? null,
         pageType: classification.pageType,
